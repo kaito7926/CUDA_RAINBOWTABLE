@@ -35,8 +35,10 @@ int cmd_plan(int argc, char** argv) {
         return 0;
     }
 
+    // Defaults tuned for the 36-char [a-z0-9] keyspace: N = 36^8 ≈ 2.82e12.
+    // For ~95% model coverage we need chain_len * chains ≈ 3 N ≈ 8.46e12.
     const uint32_t chain_len = a.opt_u32("--chain-len", 1048576);
-    const uint64_t chains    = a.opt_u64("--chains",    623800000ULL);
+    const uint64_t chains    = a.opt_u64("--chains",    8100000ULL);
     const uint32_t tables    = a.opt_u32("--tables",    1);
     const uint32_t shards    = a.opt_u32("--shards",    4096);
     const double   rate_ghps = a.opt_double("--rate",   10.0);
@@ -61,9 +63,9 @@ int cmd_plan(int argc, char** argv) {
     const double avg_bytes_per_shard = static_cast<double>(raw_bytes_per_table) / shards;
 
     std::printf("desrt plan\n");
-    std::printf("  charset            : a-zA-Z0-9 (|charset|=%d)\n", desrt::CHARSET_LEN);
+    std::printf("  charset            : a-z0-9 (|charset|=%d)\n", desrt::CHARSET_LEN);
     std::printf("  key length         : %d\n", desrt::KEY_LEN);
-    std::printf("  N (keyspace)       : %llu (62^8)\n",
+    std::printf("  N (keyspace)       : %llu (36^8)\n",
                 static_cast<unsigned long long>(N));
     std::printf("  plaintext          : 0x%016llX\n",
                 static_cast<unsigned long long>(desrt::DEFAULT_PLAINTEXT));

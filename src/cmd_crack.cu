@@ -270,13 +270,13 @@ int cmd_crack(int argc, char** argv) {
                 uint64_t idx_p = replay_forward(
                     it->startpoint, /*start_round=*/0, /*steps=*/probes[k].p,
                     table_id, plaintext, N);
-                uint64_t key = desrt::base62_index_to_key(idx_p);
+                uint64_t key = desrt::idx_to_key(idx_p);
                 uint64_t ct  = desrt::des::encrypt_block(key, plaintext);
                 if (ct == h_targets[t]) {
                     solved[t]        = true;
                     recovered_idx[t] = idx_p;
                     char keybuf[9];
-                    desrt::base62_key_to_string(key, keybuf);
+                    desrt::key_to_string(key, keybuf);
                     keybuf[8] = '\0';
                     recovered_key[t] = keybuf;
                     break;

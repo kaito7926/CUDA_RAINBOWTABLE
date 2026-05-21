@@ -26,16 +26,25 @@ namespace desrt {
 constexpr uint64_t DEFAULT_PLAINTEXT = 0x1122334455667788ULL;
 
 // Charset and key length. Keep these constexpr so the constants propagate.
-constexpr int CHARSET_LEN = 62;
+//
+// Charset is the 36-character lowercase-alphanumeric set
+// "abcdefghijklmnopqrstuvwxyz0123456789".
+//   digit  0..25 -> 'a'..'z'
+//   digit 26..35 -> '0'..'9'
+//
+// N = 36^8 = 2,821,109,907,456 (~2^41.4), about 77x smaller than the 62^8
+// alnum keyspace. Coverage and table-size figures in `desrt plan` follow
+// directly from this.
+constexpr int CHARSET_LEN = 36;
 constexpr int KEY_LEN = 8;
 
-// N = 62^8 = 218,340,105,584,896. Fits comfortably in uint64_t (< 2^48).
 constexpr uint64_t N_KEYSPACE =
-    62ULL * 62ULL * 62ULL * 62ULL * 62ULL * 62ULL * 62ULL * 62ULL;
+    36ULL * 36ULL * 36ULL * 36ULL * 36ULL * 36ULL * 36ULL * 36ULL;
 
 // LCG constants (Knuth's MMIX). Used to map chain_id -> startpoint index.
-// Note: the LCG runs mod 2^64, and we then take mod N. This is not a permutation
-// over [0, N), but for ~624M draws against N=2.18e14 collisions are negligible.
+// Note: the LCG runs mod 2^64, and we then take mod N. This is not a
+// permutation over [0, N), but for ~8M draws against N≈2.82e12, accidental
+// startpoint collisions are still negligible.
 constexpr uint64_t LCG_A = 6364136223846793005ULL;
 constexpr uint64_t LCG_B = 1442695040888963407ULL;
 
@@ -57,23 +66,22 @@ DESRT_HD DESRT_INLINE uint64_t splitmix64(uint64_t x) {
     return x ^ (x >> 31);
 }
 
-// ---------- base62 ----------
-// Charset order is "a..z A..Z 0..9". Digit 0='a', 25='z', 26='A', 51='Z',
-// 52='0', 61='9'. The "key" returned is a 64-bit value with the FIRST
-// character of the 8-char string in the MOST significant byte (byte 7), so
-// the bit-1 (MSB) of the value is the MSB of the first character.
-DESRT_HD DESRT_INLINE uint64_t base62_index_to_key(uint64_t idx) {
+// ---------- charset <-> index <-> packed key ----------
+// The "key" returned is a 64-bit value with the FIRST character of the 8-char
+// string in the MOST significant byte (byte 7), so the bit-1 (MSB) of the
+// value is the MSB of the first character. This matches the byte order that
+// DES PC-1 expects.
+DESRT_HD DESRT_INLINE uint64_t idx_to_key(uint64_t idx) {
     uint64_t key = 0;
-    // Iteration i=0 extracts the least significant base62 digit, which
+    // Iteration i=0 extracts the least significant base-36 digit, which
     // corresponds to the LAST character of the 8-char string.
     DESRT_UNROLL
     for (int i = 0; i < 8; i++) {
-        uint32_t digit = static_cast<uint32_t>(idx % 62ULL);
-        idx /= 62ULL;
+        uint32_t digit = static_cast<uint32_t>(idx % static_cast<uint64_t>(CHARSET_LEN));
+        idx /= static_cast<uint64_t>(CHARSET_LEN);
         uint8_t c;
-        if (digit < 26)      c = static_cast<uint8_t>('a' + digit);
-        else if (digit < 52) c = static_cast<uint8_t>('A' + (digit - 26));
-        else                 c = static_cast<uint8_t>('0' + (digit - 52));
+        if (digit < 26) c = static_cast<uint8_t>('a' + digit);
+        else            c = static_cast<uint8_t>('0' + (digit - 26));
         // Place byte i at the i-th byte from LSB. i=0 -> LSB (last char),
         // i=7 -> MSB byte (first char).
         key |= (static_cast<uint64_t>(c) << (i * 8));
@@ -82,7 +90,7 @@ DESRT_HD DESRT_INLINE uint64_t base62_index_to_key(uint64_t idx) {
 }
 
 // Write the 8-char ASCII string for `key` into out[0..7] (no null terminator).
-DESRT_HD DESRT_INLINE void base62_key_to_string(uint64_t key, char out[8]) {
+DESRT_HD DESRT_INLINE void key_to_string(uint64_t key, char out[8]) {
     DESRT_UNROLL
     for (int i = 0; i < 8; i++) {
         // out[0] is first character = byte 7 of key (MSB byte).
@@ -90,16 +98,17 @@ DESRT_HD DESRT_INLINE void base62_key_to_string(uint64_t key, char out[8]) {
     }
 }
 
-DESRT_HD DESRT_INLINE uint64_t base62_string_to_index(const char s[8]) {
+// Returns UINT64_MAX if any character is outside the charset.
+DESRT_HD DESRT_INLINE uint64_t string_to_idx(const char s[8]) {
     uint64_t idx = 0;
     DESRT_UNROLL
     for (int i = 0; i < 8; i++) {
         char c = s[i];
         uint32_t d;
         if (c >= 'a' && c <= 'z')      d = c - 'a';
-        else if (c >= 'A' && c <= 'Z') d = 26 + (c - 'A');
-        else                           d = 52 + (c - '0');
-        idx = idx * 62ULL + d;
+        else if (c >= '0' && c <= '9') d = 26 + (c - '0');
+        else                           return UINT64_MAX;
+        idx = idx * static_cast<uint64_t>(CHARSET_LEN) + d;
     }
     return idx;
 }

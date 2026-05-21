@@ -5,30 +5,36 @@ the structure of the chain kernel, the choice of reduction function, and the
 roadmap from textbook DES to a bitsliced implementation that would meet the
 spec's 10 GH/s end-to-end target.
 
-## 1. Keyspace and base62 indexing
+## 1. Keyspace and charset indexing
 
-The attack covers `key_len = 8` characters drawn from the 62-character set
-`"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"`. The
+The attack covers `key_len = 8` characters drawn from the 36-character set
+`"abcdefghijklmnopqrstuvwxyz0123456789"` (lowercase letters + digits). The
 keyspace size is
 
 ```
-N = 62^8 = 218,340,105,584,896  (< 2^48)
+N = 36^8 = 2,821,109,907,456  (≈ 2^41.4)
 ```
 
-Each integer `idx ∈ [0, N)` maps to one ASCII string `s[0..7]` via the
-standard base-62 expansion. We pack the string into a 64-bit "DES key" with
-`s[0]` in the **most-significant byte** of the uint64. The eight LSBs of each
-byte are the DES parity bits and are discarded by PC-1, so the recovered key
-may not exactly match the byte string used to produce it; it will however
-encrypt the plaintext to the same ciphertext (DES-equivalence).
+Each integer `idx ∈ [0, N)` maps to one ASCII string `s[0..7]` via standard
+base-36 expansion. Digit 0..25 → 'a'..'z', digit 26..35 → '0'..'9'. We pack
+the string into a 64-bit "DES key" with `s[0]` in the **most-significant
+byte** of the uint64. The eight LSBs of each byte are the DES parity bits
+and are discarded by PC-1, so the recovered key may not exactly match the
+byte string used to produce it; it will however encrypt the plaintext to the
+same ciphertext (DES-equivalence).
 
 `include/desrt/common.h`:
 
 ```cpp
-DESRT_HD inline uint64_t base62_index_to_key(uint64_t idx);
-DESRT_HD inline void     base62_key_to_string(uint64_t key, char out[8]);
-DESRT_HD inline uint64_t base62_string_to_index(const char s[8]);
+DESRT_HD inline uint64_t idx_to_key(uint64_t idx);
+DESRT_HD inline void     key_to_string(uint64_t key, char out[8]);
+DESRT_HD inline uint64_t string_to_idx(const char s[8]);   // UINT64_MAX on bad char
 ```
+
+> Switching to a different charset is a single point of change in
+> `common.h`: update `CHARSET_LEN`, `N_KEYSPACE`, and the two char↔digit
+> branches in `idx_to_key` / `string_to_idx`. Nothing else (DES, reduction,
+> chain kernel, shards, crack) depends on the charset directly.
 
 ## 2. Chain construction
 
@@ -36,7 +42,7 @@ DESRT_HD inline uint64_t base62_string_to_index(const char s[8]);
 start_idx = (LCG_A * chain_id + LCG_B) mod N
 idx = start_idx
 for r in [0, chain_len):
-    key = base62_index_to_key(idx)
+    key = idx_to_key(idx)
     ct  = DES_ECB_encrypt_block(key, plaintext)
     idx = reduce(ct, r, table_id, N)
 endpoint = idx
@@ -44,8 +50,8 @@ Record { endpoint, start_idx }
 ```
 
 `LCG_A = 6364136223846793005`, `LCG_B = 1442695040888963407` — Knuth's MMIX
-constants. The LCG runs `mod 2^64` and we take `mod N` afterwards. With ~624 M
-draws against `N ≈ 2.18 × 10^14`, accidental start-point collisions are
+constants. The LCG runs `mod 2^64` and we take `mod N` afterwards. With ~8 M
+draws against `N ≈ 2.82 × 10^12`, accidental start-point collisions are
 negligible.
 
 The reduction is
@@ -78,11 +84,11 @@ For a single table:
 p_one_table ≈ 1 - exp(- chain_len * chains_per_table / N)
 ```
 
-With `chain_len = 2^20 = 1,048,576` and `chains = 623,800,000`:
+With `chain_len = 2^20 = 1,048,576` and `chains = 8,100,000`:
 
 ```
-chain_len * chains / N = 6.5398e+14 / 2.1834e+14 = 2.995
-p_one_table         ≈ 1 - exp(-2.995) ≈ 0.9499
+chain_len * chains / N = 8.493e+12 / 2.821e+12 = 3.011
+p_one_table         ≈ 1 - exp(-3.011) ≈ 0.9508
 ```
 
 This is the upper bound that ignores chain merges. Real tables typically reach
@@ -106,13 +112,13 @@ struct Record { uint64_t endpoint; uint64_t startpoint; };
 #pragma pack(pop)
 ```
 
-623.8 M × 16 B = **9.99 GiB** per table. We partition by
+8.1 M × 16 B = **~130 MiB** per table. We partition by
 
 ```
 shard_id = endpoint mod num_shards
 ```
 
-with `num_shards ∈ {2048, 4096}`. 4096 shards gives ~2.5 MiB / shard which
+with `num_shards ∈ {2048, 4096}`. 4096 shards gives ~32 KiB / shard which
 fits in RAM trivially during the sort step. The on-disk layout:
 
 ```
@@ -177,7 +183,7 @@ threads total (host bound below 4 GiB by capping the candidate buffer to
 2. Walk shards in order; load each sorted shard once; binary-search every
    candidate that falls in it.
 3. For each match, replay forward from the recorded `startpoint` for `p`
-   chain steps, compute `key = base62(idx_p)`, and check
+   chain steps, compute `key = idx_to_key(idx_p)`, and check
    `DES(key, plaintext) == CT`. False positives (different chain converging
    to the same endpoint) fail this check.
 
@@ -195,10 +201,16 @@ something like:
 
 * 50 – 300 MH/s **per GPU**
 * 100 – 600 MH/s across both L4s
-* full 623.8 M-chain build: anywhere from several days to "doesn't
-  complete in a week"
+* full 8.1 M-chain build (×1,048,576 = ~8.5e12 DES ops): tens of minutes to
+  a few hours depending on which point in that throughput range you land.
+  A useful sanity check is `desrt bench` followed by
+  `desrt build --chains <small> --chain-len <small>` to extrapolate.
 
-The spec's 10 GH/s and ~18 h target requires a **bitsliced** kernel:
+For the original 62-char keyspace the build numbers were two orders of
+magnitude larger (~10 TiB-equivalent of work). The 10 GH/s target from the
+spec was sized for that — for the 36-char keyspace it is comfortably met by
+the textbook kernel. A bitsliced rewrite is still the natural next step if
+you want to push to multi-table coverage or much larger keyspaces:
 
 * 64-way data-parallel S-boxes laid out as gate networks (Matthew Kwan or
   Roman Rusakov style). Each thread processes 64 keys simultaneously by
@@ -235,7 +247,7 @@ current "two processes" recipe is simpler and exercises the resume path.
 
 | File | Role |
 |---|---|
-| `include/desrt/common.h` | Config constants, `Record`, base62, LCG, `splitmix64`, `reduce_idx`. |
+| `include/desrt/common.h` | Config constants, `Record`, charset/key helpers, LCG, `splitmix64`, `reduce_idx`. |
 | `include/desrt/des.h`    | FIPS-46 DES tables + `encrypt_block` + `chain_step`. |
 | `include/desrt/shard.h`  | `ShardWriter`, `sort_shard`, `read_shard`, `find_endpoint`. |
 | `include/desrt/cli.h`    | Flag parser. |

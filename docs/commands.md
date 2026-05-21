@@ -11,10 +11,10 @@ side effects.
 ```
 desrt plan
     [--chain-len N]   default 1048576
-    [--chains N]      default 623800000
+    [--chains N]      default 8100000   (~95% coverage of N = 36^8)
     [--tables N]      default 1
     [--shards N]      default 4096
-    [--rate GH/s]     default 10.0    (used for the time estimate only)
+    [--rate GH/s]     default 10.0      (used for the time estimate only)
 ```
 
 The "model coverage" line is the upper-bound `1 - exp(-LC/N)`; chain merges
@@ -44,7 +44,7 @@ per-shard raw files at `<out>/raw/shard_NNNNNN.bin`.
 ```
 desrt build
     --out DIR             required
-    [--chains N]            default 1000000  (use 623800000 for full)
+    [--chains N]            default 1000000  (use 8100000 for ~95% coverage)
     [--start-chain-id N]    default 0        (for resume/multi-GPU)
     [--chain-len N]         default 1048576
     [--table-id N]          default 0
@@ -91,8 +91,8 @@ desrt make-target
     [--count N]          default 8
     [--seed N]           default = wall clock
     [--plaintext 0xHEX]  default 0x1122334455667788
-    [--key STRING]       8 alnum chars; only this one target is emitted
-    [--key-index N]      0 <= N < 62^8;     only this one target is emitted
+    [--key STRING]       8 chars from [a-z0-9]; only this one target is emitted
+    [--key-index N]      0 <= N < 36^8;     only this one target is emitted
 ```
 
 The `--key`/`--key-index` form is useful for hand-constructed crack tests:

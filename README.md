@@ -1,18 +1,18 @@
 # desrt — DES chosen-plaintext rainbow table (CUDA 12, C++17)
 
 A learning-project rainbow-table builder and cracker for the DES cipher under
-a **single fixed plaintext** `0x1122334455667788` and **8-character alnum
-keys** (`[a-zA-Z0-9]^8`).
+a **single fixed plaintext** `0x1122334455667788` and **8-character lowercase
+alnum keys** (`[a-z0-9]^8`, charset size 36).
 
-The full keyspace is `N = 62^8 = 218,340,105,584,896`. A single table with the
-suggested configuration covers roughly 95% of that keyspace with about 623.8 M
-chains of length 2^20.
+The full keyspace is `N = 36^8 = 2,821,109,907,456 (≈ 2.82 × 10^12)`. A single
+table at `chain_len = 2^20` covers roughly 95% of the keyspace with about
+8.1 M chains (raw size ≈ 130 MiB).
 
 ## Layout
 
 ```
 include/desrt/
-    common.h          # config, base62, splitmix64, reduction, LCG, Record
+    common.h          # config, charset/key helpers, splitmix64, reduction, LCG, Record
     des.h             # textbook FIPS-46 DES (host + device)
     shard.h           # ShardWriter, sort_shard, read_shard, find_endpoint
     cli.h             # tiny flag parser
@@ -63,8 +63,8 @@ verify correctness end-to-end:
 # 1. Sanity check: known-answer tests + microbench.
 ./build/desrt bench --host-iters 100000 --gpu-threads 16384 --gpu-iters 256
 
-# 2. Plan numbers (default cfg matches the assignment spec).
-./build/desrt plan --chain-len 1048576 --chains 623800000 --shards 4096
+# 2. Plan numbers (defaults target ~95% coverage of N = 36^8).
+./build/desrt plan --chain-len 1048576 --chains 8100000 --shards 4096
 
 # 3. Smoke build: 2k chains of length 1024.
 ./build/desrt build --out ./tab --chains 2000 --chain-len 1024 \
@@ -83,11 +83,11 @@ verify correctness end-to-end:
 ./build/desrt stats --table ./tab --shards 64
 ```
 
-For the full-size run, use the spec defaults:
+For the full-size run, target ~95% coverage of the 36-char keyspace:
 
 ```bash
 ./build/desrt build  --out /data/desrt-table --table-id 0 \
-                     --chains 623800000 --chain-len 1048576 --shards 4096 \
+                     --chains 8100000 --chain-len 1048576 --shards 4096 \
                      --batch-size 65536 --shard-buffer-kb 64
 ./build/desrt sort   --in    /data/desrt-table --shards 4096 --jobs 8
 ./build/desrt stats  --table /data/desrt-table --shards 4096

@@ -1,4 +1,4 @@
-// `desrt make-target` — pick random 8-char alnum keys, encrypt the fixed
+// `desrt make-target` — pick random 8-char [a-z0-9] keys, encrypt the fixed
 // plaintext under each, and emit a text file of (key, key_index, ciphertext)
 // triples suitable for `desrt crack --target`.
 
@@ -48,10 +48,10 @@ int cmd_make_target(int argc, char** argv) {
     }
 
     auto emit = [&](uint64_t idx) {
-        uint64_t k64 = desrt::base62_index_to_key(idx);
+        uint64_t k64 = desrt::idx_to_key(idx);
         uint64_t ct  = desrt::des::encrypt_block(k64, plaintext);
         char key_str[9];
-        desrt::base62_key_to_string(k64, key_str);
+        desrt::key_to_string(k64, key_str);
         key_str[8] = '\0';
         std::fprintf(f, "%llu\t%s\t%016llX\n",
                      (unsigned long long)idx, key_str,
@@ -62,11 +62,16 @@ int cmd_make_target(int argc, char** argv) {
         uint64_t idx;
         if (!specific_key.empty()) {
             if (specific_key.size() != 8) {
-                std::fprintf(stderr, "make-target: --key must be exactly 8 alnum characters\n");
+                std::fprintf(stderr, "make-target: --key must be exactly 8 characters from [a-z0-9]\n");
                 std::fclose(f);
                 return 1;
             }
-            idx = desrt::base62_string_to_index(specific_key.c_str());
+            idx = desrt::string_to_idx(specific_key.c_str());
+            if (idx == UINT64_MAX) {
+                std::fprintf(stderr, "make-target: --key must be exactly 8 characters from [a-z0-9]\n");
+                std::fclose(f);
+                return 1;
+            }
         } else {
             idx = std::strtoull(idx_str, nullptr, 0);
             if (idx >= desrt::N_KEYSPACE) {

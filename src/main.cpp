@@ -1,4 +1,4 @@
-// desrt — DES rainbow table builder/cracker for an 8-char alnum keyspace.
+// desrt — DES rainbow table builder/cracker for an 8-char [a-z0-9] keyspace.
 //
 // Command dispatch:
 //   desrt plan

@@ -268,7 +268,7 @@ DESRT_HD DESRT_INLINE uint64_t encrypt_block(uint64_t key, uint64_t plaintext) {
 DESRT_HD DESRT_INLINE uint64_t chain_step(
     uint64_t idx, uint32_t round, uint32_t table_id, uint64_t plaintext, uint64_t N)
 {
-    uint64_t key = desrt::base62_index_to_key(idx);
+    uint64_t key = desrt::idx_to_key(idx);
     uint64_t ct  = encrypt_block(key, plaintext);
     return desrt::reduce_idx(ct, round, table_id, N);
 }
