@@ -21,9 +21,27 @@
 namespace desrt::des {
 
 // ---------- FIPS-46 tables ----------
+//
+// Storage class selection. NVCC compiles each .cu file in two passes:
+//   * Host pass:   __CUDA_ARCH__ undefined -> tables are plain `static const`,
+//                  callable from host code.
+//   * Device pass: __CUDA_ARCH__ defined   -> tables are `__device__ static
+//                  const`, accessible from device code.
+// In plain C++ TUs (cmd_make_target.cpp) neither macro is defined, so the
+// `static const` branch is taken — same as the NVCC host pass.
+//
+// `inline constexpr` (the previous form) gave host-only storage; the device
+// pass could not see the symbols and bailed out with "undefined in device
+// code". `static` linkage means each TU gets its own copy; total table size
+// is ~700 bytes so duplication across TUs is negligible.
+#if defined(__CUDA_ARCH__)
+  #define DESRT_TABLE static __device__ const
+#else
+  #define DESRT_TABLE static const
+#endif
 
 // Initial permutation.
-inline constexpr uint8_t IP[64] = {
+DESRT_TABLE uint8_t IP[64] = {
     58, 50, 42, 34, 26, 18, 10,  2,
     60, 52, 44, 36, 28, 20, 12,  4,
     62, 54, 46, 38, 30, 22, 14,  6,
@@ -35,7 +53,7 @@ inline constexpr uint8_t IP[64] = {
 };
 
 // Final permutation (inverse of IP).
-inline constexpr uint8_t FP[64] = {
+DESRT_TABLE uint8_t FP[64] = {
     40,  8, 48, 16, 56, 24, 64, 32,
     39,  7, 47, 15, 55, 23, 63, 31,
     38,  6, 46, 14, 54, 22, 62, 30,
@@ -47,7 +65,7 @@ inline constexpr uint8_t FP[64] = {
 };
 
 // E expansion (32 -> 48).
-inline constexpr uint8_t E_TABLE[48] = {
+DESRT_TABLE uint8_t E_TABLE[48] = {
     32,  1,  2,  3,  4,  5,
      4,  5,  6,  7,  8,  9,
      8,  9, 10, 11, 12, 13,
@@ -59,7 +77,7 @@ inline constexpr uint8_t E_TABLE[48] = {
 };
 
 // P permutation inside f.
-inline constexpr uint8_t P_TABLE[32] = {
+DESRT_TABLE uint8_t P_TABLE[32] = {
     16,  7, 20, 21,
     29, 12, 28, 17,
      1, 15, 23, 26,
@@ -71,7 +89,7 @@ inline constexpr uint8_t P_TABLE[32] = {
 };
 
 // PC-1 (64 -> 56).
-inline constexpr uint8_t PC1[56] = {
+DESRT_TABLE uint8_t PC1[56] = {
     57, 49, 41, 33, 25, 17,  9,
      1, 58, 50, 42, 34, 26, 18,
     10,  2, 59, 51, 43, 35, 27,
@@ -83,7 +101,7 @@ inline constexpr uint8_t PC1[56] = {
 };
 
 // PC-2 (56 -> 48).
-inline constexpr uint8_t PC2[48] = {
+DESRT_TABLE uint8_t PC2[48] = {
     14, 17, 11, 24,  1,  5,
      3, 28, 15,  6, 21, 10,
     23, 19, 12,  4, 26,  8,
@@ -95,14 +113,14 @@ inline constexpr uint8_t PC2[48] = {
 };
 
 // Per-round left rotation count for C and D halves.
-inline constexpr uint8_t SHIFTS[16] = {
+DESRT_TABLE uint8_t SHIFTS[16] = {
     1, 1, 2, 2, 2, 2, 2, 2, 1, 2, 2, 2, 2, 2, 2, 1
 };
 
 // S-boxes, each laid out as 64 entries in row-major order (row*16 + col),
 // where row = (b1<<1)|b6 and col = (b2<<3)|(b3<<2)|(b4<<1)|b5 from the
 // six-bit S-box input b1..b6 (MSB to LSB).
-inline constexpr uint8_t S_BOX[8][64] = {
+DESRT_TABLE uint8_t S_BOX[8][64] = {
     { // S1
         14, 4, 13, 1, 2, 15, 11, 8, 3, 10, 6, 12, 5, 9, 0, 7,
          0, 15, 7, 4, 14, 2, 13, 1, 10, 6, 12, 11, 9, 5, 3, 8,
@@ -152,6 +170,10 @@ inline constexpr uint8_t S_BOX[8][64] = {
          2, 1, 14, 7, 4, 10, 8, 13, 15, 12, 9, 0, 3, 5, 6, 11
     }
 };
+
+// All table definitions done; clear the helper so it doesn't leak out of
+// this header.
+#undef DESRT_TABLE
 
 // ---------- helpers ----------
 
