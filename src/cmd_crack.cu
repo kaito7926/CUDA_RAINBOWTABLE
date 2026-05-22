@@ -20,14 +20,18 @@
 //      per replay, ~0.1 s).
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <mutex>
 #include <sstream>
 #include <string>
+#include <thread>
+#include <tuple>
 #include <vector>
 
 #include <cuda_runtime.h>
@@ -113,10 +117,13 @@ void print_help() {
     std::printf(
         "desrt crack --table DIR --target FILE [--chain-len N] [--table-id N]\n"
         "            [--shards N] [--gpu DEVICE] [--plaintext 0xHEX] [--block-size N]\n"
-        "            [--ct HEX]\n"
+        "            [--ct HEX] [--jobs N]\n"
         "\n"
         "Either --target FILE (lines: <idx> <key> <ct_hex> or just <ct_hex>) or a\n"
-        "single --ct HEX may be given.\n");
+        "single --ct HEX may be given. --jobs N parallelises the host-side shard\n"
+        "walk and replay-verify across N CPU threads (defaults to all hardware\n"
+        "threads). At m·t/N≈3 the table merges heavily, so the replay-verify\n"
+        "loop dominates lookup time — multi-threading is essential.\n");
 }
 
 struct Probe {
@@ -250,69 +257,115 @@ int cmd_crack(int argc, char** argv) {
                   return a.cand < b.cand;
               });
 
-    // ---- 3. Walk shards, look up, replay-verify ----
-    std::vector<bool> solved(T, false);
+    // ---- 3. Walk shards, look up, replay-verify (multi-threaded) ----
+    // Each shard's probes form a contiguous range in `probes` (since we sorted
+    // by shard). Workers atomically claim one shard at a time, read it, and
+    // do all the replay-verify for its probes locally; results are merged at
+    // the end. With T·t² / 2 replay work concentrated in this phase and
+    // ~117K false positives at m·t/N≈3, single-thread crack took ~10 min on
+    // the user's 24-core server (588 s). Parallelising drops it to seconds.
+    std::vector<uint8_t> solved(T, 0);          // uint8_t: indexed atomically
     std::vector<uint64_t> recovered_idx(T, 0);
     std::vector<std::string> recovered_key(T);
+    std::mutex result_mu;                        // protects vectors above
 
-    auto t_lookup0 = std::chrono::steady_clock::now();
-    size_t i = 0;
-    uint32_t shards_loaded = 0;
-    uint64_t false_positives = 0;
-    while (i < probes.size()) {
-        uint32_t s = probes[i].shard;
-        size_t j = i;
-        while (j < probes.size() && probes[j].shard == s) j++;
+    const int jobs_in = a.opt_int("--jobs", 0);
+    unsigned jobs = (jobs_in > 0)
+                    ? static_cast<unsigned>(jobs_in)
+                    : std::max(1u, std::thread::hardware_concurrency());
 
-        // Load this shard's sorted records once.
-        auto shard = desrt::read_shard(desrt::sorted_shard_path(table_root, s));
-        shards_loaded++;
-        if (shard.empty()) { i = j; continue; }
+    // Index the boundaries: list of (probe_start, probe_end, shard_id) ranges
+    // — one per shard that actually has probes. Workers consume these by
+    // atomic counter.
+    struct ShardRange { size_t lo; size_t hi; uint32_t shard; };
+    std::vector<ShardRange> ranges;
+    ranges.reserve(num_shards);
+    {
+        size_t i = 0;
+        while (i < probes.size()) {
+            uint32_t s = probes[i].shard;
+            size_t j = i;
+            while (j < probes.size() && probes[j].shard == s) j++;
+            ranges.push_back({i, j, s});
+            i = j;
+        }
+    }
 
-        for (size_t k = i; k < j; k++) {
-            uint32_t t = probes[k].target;
-            if (solved[t]) continue;
+    std::printf("  starting lookup phase: %zu shard-ranges, %u host threads\n",
+                ranges.size(), jobs);
+    std::fflush(stdout);
 
-            // lower_bound on endpoint, then walk all records that share this
-            // endpoint. Chain merges put multiple startpoints behind the same
-            // endpoint, and any one of them might be the chain that actually
-            // covers our target — checking only the first is a correctness bug.
-            auto lo = std::lower_bound(
-                shard.begin(), shard.end(), probes[k].cand,
-                [](const desrt::Record& r, uint64_t v) {
-                    return r.endpoint < v;
-                });
-            for (auto it = lo;
-                 it != shard.end() && it->endpoint == probes[k].cand;
-                 ++it)
-            {
-                // Replay from startpoint for probes[k].p chain steps -> idx_p.
-                uint64_t idx_p = replay_forward(
-                    it->startpoint, /*start_round=*/0, /*steps=*/probes[k].p,
-                    table_id, plaintext, N);
-                uint64_t key = desrt::idx_to_key(idx_p);
-                uint64_t ct  = desrt::des::encrypt_block(key, plaintext);
-                if (ct == h_targets[t]) {
-                    solved[t]        = true;
-                    recovered_idx[t] = idx_p;
-                    char keybuf[9];
-                    desrt::key_to_string(key, keybuf);
-                    keybuf[8] = '\0';
-                    recovered_key[t] = keybuf;
-                    break;
-                } else {
-                    false_positives++;
+    std::atomic<size_t> next_range{0};
+    std::atomic<uint32_t> shards_loaded{0};
+    std::atomic<uint64_t> false_positives{0};
+
+    auto worker = [&]() {
+        for (;;) {
+            size_t r = next_range.fetch_add(1, std::memory_order_relaxed);
+            if (r >= ranges.size()) return;
+            const ShardRange& rng = ranges[r];
+
+            auto shard = desrt::read_shard(
+                desrt::sorted_shard_path(table_root, rng.shard));
+            shards_loaded.fetch_add(1, std::memory_order_relaxed);
+            if (shard.empty()) continue;
+
+            uint64_t local_fp = 0;
+            for (size_t k = rng.lo; k < rng.hi; k++) {
+                uint32_t tgt = probes[k].target;
+                // Cheap unsynchronised early-out: solved[tgt] is byte-sized
+                // and only ever goes 0→1. A torn read at worst causes a
+                // redundant replay, which is harmless.
+                if (solved[tgt]) continue;
+
+                auto lo_it = std::lower_bound(
+                    shard.begin(), shard.end(), probes[k].cand,
+                    [](const desrt::Record& r, uint64_t v) {
+                        return r.endpoint < v;
+                    });
+                for (auto it = lo_it;
+                     it != shard.end() && it->endpoint == probes[k].cand;
+                     ++it)
+                {
+                    uint64_t idx_p = replay_forward(
+                        it->startpoint, /*start_round=*/0,
+                        /*steps=*/probes[k].p,
+                        table_id, plaintext, N);
+                    uint64_t key = desrt::idx_to_key(idx_p);
+                    uint64_t ct  = desrt::des::encrypt_block(key, plaintext);
+                    if (ct == h_targets[tgt]) {
+                        // Lock to publish the hit. Contention is tiny
+                        // (≤T hits total).
+                        std::lock_guard<std::mutex> lk(result_mu);
+                        if (!solved[tgt]) {
+                            solved[tgt]        = 1;
+                            recovered_idx[tgt] = idx_p;
+                            char keybuf[9];
+                            desrt::key_to_string(key, keybuf);
+                            keybuf[8] = '\0';
+                            recovered_key[tgt] = keybuf;
+                        }
+                        break;
+                    } else {
+                        local_fp++;
+                    }
                 }
             }
+            false_positives.fetch_add(local_fp, std::memory_order_relaxed);
         }
-        i = j;
-    }
+    };
+
+    auto t_lookup0 = std::chrono::steady_clock::now();
+    std::vector<std::thread> threads;
+    threads.reserve(jobs);
+    for (unsigned i = 0; i < jobs; i++) threads.emplace_back(worker);
+    for (auto& th : threads) th.join();
     auto t_lookup1 = std::chrono::steady_clock::now();
     double lookup_secs = std::chrono::duration<double>(t_lookup1 - t_lookup0).count();
 
     // ---- 4. Report ----
     int solved_count = 0;
-    for (bool b : solved) if (b) solved_count++;
+    for (uint8_t b : solved) if (b) solved_count++;
     std::printf("\nResults (%d/%u solved):\n", solved_count, T);
     for (uint32_t t = 0; t < T; t++) {
         std::printf("  [%s] %s  ct=%016llX",
@@ -327,7 +380,8 @@ int cmd_crack(int argc, char** argv) {
         std::printf("\n");
     }
     std::printf("\nshards loaded=%u  false positives=%llu  lookup=%.2fs  total=%.2fs\n",
-                shards_loaded, (unsigned long long)false_positives,
+                shards_loaded.load(),
+                (unsigned long long)false_positives.load(),
                 lookup_secs, gpu_secs + lookup_secs);
 
     return (solved_count == static_cast<int>(T)) ? 0 : 4;

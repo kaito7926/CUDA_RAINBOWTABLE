@@ -125,12 +125,20 @@ desrt crack
     --target FILE         or use --ct
     --ct HEX              single-target shortcut
     [--chain-len N]       default 4096       (must match the build)
+    [--jobs N]            default = hardware_concurrency() (host worker threads)
     [--table-id N]        default 0          (must match the build)
     [--shards N]          default 4096       (must match the build)
     [--gpu DEVICE]        default 0
     [--plaintext 0xHEX]   default 0x1122334455667788
     [--block-size N]      default 128
 ```
+
+The host-side phase (shard walk + replay-verify) is multi-threaded; at
+`m·t/N≈3` the table has heavy chain merges so each candidate match
+typically returns 2–3 records, and the inner replay-verify loop dominates
+crack time. The lookup runs across `--jobs` threads, defaulting to all
+available cores. With 24 cores and the default 32-target workload, total
+crack time is a few seconds.
 
 Output:
 
