@@ -1,6 +1,12 @@
-// `desrt make-target` — pick random 8-char [a-z0-9] keys, encrypt the fixed
-// plaintext under each, and emit a text file of (key, key_index, ciphertext)
-// triples suitable for `desrt crack --target`.
+// `desrt make-target` — pick random 8-char keys, encrypt the fixed plaintext
+// under each, and emit a text file of (key, key_index, ciphertext) triples
+// suitable for `desrt crack --target`.
+//
+// User-supplied --key may use any of [a-z0-9]; it is auto-canonicalised by
+// `string_to_idx` into the 19-char DES-injective alphabet
+// "abdfhjlnprtvxz02468". The emitted key column is the canonical form, and
+// the emitted ciphertext is DES(canonical_key, plaintext) — i.e. exactly
+// what the rainbow-table lookup will recover.
 
 #include <chrono>
 #include <cstdint>

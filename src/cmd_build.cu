@@ -65,7 +65,7 @@ void print_help() {
         "            [--shard-buffer-kb N] [--gpu DEVICE] [--plaintext 0xHEX]\n"
         "            [--block-size N]\n"
         "\n"
-        "Defaults: chain-len=1048576, chains=1000000 (use --chains 623800000 for full),\n"
+        "Defaults: chain-len=1048576, chains=50000 (~95%% of N=19^8),\n"
         "          shards=4096, batch-size=65536, shard-buffer-kb=64.\n");
 }
 
@@ -82,7 +82,7 @@ int cmd_build(int argc, char** argv) {
         return 1;
     }
 
-    const uint64_t chains       = a.opt_u64("--chains", 1000000ULL);
+    const uint64_t chains       = a.opt_u64("--chains", 50000ULL);
     const uint64_t start_chain  = a.opt_u64("--start-chain-id", 0ULL);
     const uint32_t chain_len    = a.opt_u32("--chain-len", 1048576U);
     const uint32_t table_id     = a.opt_u32("--table-id", 0U);

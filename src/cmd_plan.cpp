@@ -1,8 +1,8 @@
 // `desrt plan` — back-of-the-envelope size, coverage, and build-time numbers.
 //
-// Inputs (with sensible defaults that match the assignment spec):
+// Inputs (with sensible defaults for the 19^8 DES-effective keyspace):
 //   --chain-len    chain length (default 1048576)
-//   --chains       chain count per table (default 623800000)
+//   --chains       chain count per table (default 50000)
 //   --tables       number of tables (default 1)
 //   --shards       number of shards on disk (default 4096)
 //   --rate         assumed end-to-end DES rate in GH/s (default 10.0)
@@ -35,10 +35,13 @@ int cmd_plan(int argc, char** argv) {
         return 0;
     }
 
-    // Defaults tuned for the 36-char [a-z0-9] keyspace: N = 36^8 ≈ 2.82e12.
-    // For ~95% model coverage we need chain_len * chains ≈ 3 N ≈ 8.46e12.
+    // Defaults tuned for the 19-char canonical (DES-injective) keyspace:
+    //   N = 19^8 = 16,983,563,041 ≈ 1.70e10.
+    // For ~95% model coverage we need chain_len * chains ≈ 3·N ≈ 5.10e10,
+    // so with chain_len = 2^20 = 1,048,576 we want chains ≈ 48,600. Round
+    // up a little for headroom against the chain-merge slack (~10–15%).
     const uint32_t chain_len = a.opt_u32("--chain-len", 1048576);
-    const uint64_t chains    = a.opt_u64("--chains",    8100000ULL);
+    const uint64_t chains    = a.opt_u64("--chains",    50000ULL);
     const uint32_t tables    = a.opt_u32("--tables",    1);
     const uint32_t shards    = a.opt_u32("--shards",    4096);
     const double   rate_ghps = a.opt_double("--rate",   10.0);
@@ -63,9 +66,11 @@ int cmd_plan(int argc, char** argv) {
     const double avg_bytes_per_shard = static_cast<double>(raw_bytes_per_table) / shards;
 
     std::printf("desrt plan\n");
-    std::printf("  charset            : a-z0-9 (|charset|=%d)\n", desrt::CHARSET_LEN);
+    std::printf("  charset (canonical): abdfhjlnprtvxz02468 (|charset|=%d)\n",
+                desrt::CHARSET_LEN);
+    std::printf("  accepts at input   : [a-z0-9] (auto-canonicalised in string_to_idx)\n");
     std::printf("  key length         : %d\n", desrt::KEY_LEN);
-    std::printf("  N (keyspace)       : %llu (36^8)\n",
+    std::printf("  N (keyspace)       : %llu (19^8, DES-injective)\n",
                 static_cast<unsigned long long>(N));
     std::printf("  plaintext          : 0x%016llX\n",
                 static_cast<unsigned long long>(desrt::DEFAULT_PLAINTEXT));

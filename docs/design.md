@@ -7,34 +7,75 @@ spec's 10 GH/s end-to-end target.
 
 ## 1. Keyspace and charset indexing
 
-The attack covers `key_len = 8` characters drawn from the 36-character set
-`"abcdefghijklmnopqrstuvwxyz0123456789"` (lowercase letters + digits). The
-keyspace size is
+### 1.1 The DES parity collapse
+
+The user-facing alphabet is `[a-z0-9]` (36 characters). But DES PC-1
+discards bit 0 (the LSB) of each input key byte. Two ASCII characters that
+differ only in their LSB are therefore **DES-equivalent** — they produce the
+same ciphertext under any plaintext.
+
+For `[a-z0-9]` the parity classes are:
+
+* Letters: `{a}`, `{b,c}`, `{d,e}`, `{f,g}`, `{h,i}`, `{j,k}`, `{l,m}`,
+  `{n,o}`, `{p,q}`, `{r,s}`, `{t,u}`, `{v,w}`, `{x,y}`, `{z}` — 2 singletons
+  (`a`, `z`; their pairs `` ` `` and `{` are not in the charset) plus 12
+  pairs → **14 letter classes**.
+* Digits: `{0,1}`, `{2,3}`, `{4,5}`, `{6,7}`, `{8,9}` → **5 digit classes**.
+
+> **Effective alphabet size: 19, not 36.**
+
+If we naively packed all 36 ASCII characters into a chain and iterated,
+every chain step would funnel through that 19-byte bottleneck, and chains
+would collapse at the rate `m² / (2 · 19⁸)`. An early build at
+`chains = 8.1 M`, `chain_len = 2²⁰` produced only **26,319 unique
+endpoints** out of 8.1 M records — exactly the asymptote
+`m(t) = 1 / (t/(2·19⁸) + 1/m₀) ≈ 33,800` that the merge-rate ODE predicts.
+That was the catastrophic-stats bug.
+
+### 1.2 The fix — canonical 19-char alphabet
+
+We work internally in the canonical alphabet
 
 ```
-N = 36^8 = 2,821,109,907,456  (≈ 2^41.4)
+"abdfhjlnprtvxz02468"          (|charset| = 19)
 ```
 
-Each integer `idx ∈ [0, N)` maps to one ASCII string `s[0..7]` via standard
-base-36 expansion. Digit 0..25 → 'a'..'z', digit 26..35 → '0'..'9'. We pack
-the string into a 64-bit "DES key" with `s[0]` in the **most-significant
-byte** of the uint64. The eight LSBs of each byte are the DES parity bits
-and are discarded by PC-1, so the recovered key may not exactly match the
-byte string used to produce it; it will however encrypt the plaintext to the
-same ciphertext (DES-equivalence).
+Each canonical character lies in a unique parity class, so packing eight of
+them into a uint64 DES key gives an **injective** mapping `idx → DES key
+(after PC-1)`. The chain math is now honest.
+
+```
+N = 19^8 = 16,983,563,041   (≈ 2^33.98)
+```
+
+Digit ↔ canonical char:
+
+```
+digit  0     -> 'a'
+digit  1..12 -> 'b','d','f','h','j','l','n','p','r','t','v','x'
+digit 13     -> 'z'
+digit 14..18 -> '0','2','4','6','8'
+```
 
 `include/desrt/common.h`:
 
 ```cpp
-DESRT_HD inline uint64_t idx_to_key(uint64_t idx);
-DESRT_HD inline void     key_to_string(uint64_t key, char out[8]);
-DESRT_HD inline uint64_t string_to_idx(const char s[8]);   // UINT64_MAX on bad char
+DESRT_HD inline uint64_t idx_to_key(uint64_t idx);                  // -> canonical bytes
+DESRT_HD inline void     key_to_string(uint64_t key, char out[8]);  // -> ASCII string
+DESRT_HD inline uint64_t string_to_idx(const char s[8]);            // UINT64_MAX on bad char
 ```
 
-> Switching to a different charset is a single point of change in
-> `common.h`: update `CHARSET_LEN`, `N_KEYSPACE`, and the two char↔digit
-> branches in `idx_to_key` / `string_to_idx`. Nothing else (DES, reduction,
-> chain kernel, shards, crack) depends on the charset directly.
+`string_to_idx` is **permissive on input**: it accepts any of the original
+36 `[a-z0-9]` characters and folds each into its parity-class digit. So
+`string_to_idx("abcdefgh")` and `string_to_idx("abddffhh")` return the same
+idx; `desrt crack` prints the result in canonical form because that is the
+unique DES-equivalent representative.
+
+> Switching to a different charset is still a single point of change in
+> `common.h`: update `CHARSET_LEN`, `N_KEYSPACE`, the `canonical_char`
+> helper, and the `string_to_idx` parity-class lookup. DES, the reduction,
+> the chain kernel, the shard I/O, and the crack lookup are all
+> charset-agnostic.
 
 ## 2. Chain construction
 
@@ -50,8 +91,8 @@ Record { endpoint, start_idx }
 ```
 
 `LCG_A = 6364136223846793005`, `LCG_B = 1442695040888963407` — Knuth's MMIX
-constants. The LCG runs `mod 2^64` and we take `mod N` afterwards. With ~8 M
-draws against `N ≈ 2.82 × 10^12`, accidental start-point collisions are
+constants. The LCG runs `mod 2^64` and we take `mod N` afterwards. With ~50K
+draws against `N ≈ 1.70 × 10^10`, accidental start-point collisions are
 negligible.
 
 The reduction is
@@ -84,11 +125,11 @@ For a single table:
 p_one_table ≈ 1 - exp(- chain_len * chains_per_table / N)
 ```
 
-With `chain_len = 2^20 = 1,048,576` and `chains = 8,100,000`:
+With `chain_len = 2^20 = 1,048,576` and `chains = 50,000`:
 
 ```
-chain_len * chains / N = 8.493e+12 / 2.821e+12 = 3.011
-p_one_table         ≈ 1 - exp(-3.011) ≈ 0.9508
+chain_len * chains / N = 5.243e+10 / 1.698e+10 = 3.087
+p_one_table         ≈ 1 - exp(-3.087) ≈ 0.9544
 ```
 
 This is the upper bound that ignores chain merges. Real tables typically reach
@@ -112,14 +153,15 @@ struct Record { uint64_t endpoint; uint64_t startpoint; };
 #pragma pack(pop)
 ```
 
-8.1 M × 16 B = **~130 MiB** per table. We partition by
+50,000 × 16 B = **~800 KiB** per table. We partition by
 
 ```
 shard_id = endpoint mod num_shards
 ```
 
-with `num_shards ∈ {2048, 4096}`. 4096 shards gives ~32 KiB / shard which
-fits in RAM trivially during the sort step. The on-disk layout:
+with `num_shards ∈ {2048, 4096}`. 4096 shards gives ~12 records per shard on
+average — small, but the shard layout is shared with the larger
+multi-table / multi-`table_id` cases, so we keep it. The on-disk layout:
 
 ```
 <root>/raw/shard_NNNNNN.bin       (append-only during build)
@@ -201,16 +243,16 @@ something like:
 
 * 50 – 300 MH/s **per GPU**
 * 100 – 600 MH/s across both L4s
-* full 8.1 M-chain build (×1,048,576 = ~8.5e12 DES ops): tens of minutes to
-  a few hours depending on which point in that throughput range you land.
+* full 50K-chain build (×1,048,576 = ~5.24e10 DES ops): a few minutes on a
+  single L4 — quick enough that you can iterate on the design.
   A useful sanity check is `desrt bench` followed by
   `desrt build --chains <small> --chain-len <small>` to extrapolate.
 
-For the original 62-char keyspace the build numbers were two orders of
+For the original 62-char keyspace the build numbers were five orders of
 magnitude larger (~10 TiB-equivalent of work). The 10 GH/s target from the
-spec was sized for that — for the 36-char keyspace it is comfortably met by
-the textbook kernel. A bitsliced rewrite is still the natural next step if
-you want to push to multi-table coverage or much larger keyspaces:
+spec was sized for that — for the 19⁸ DES-effective keyspace it is comfortably
+met by the textbook kernel. A bitsliced rewrite is still the natural next
+step if you want to push to multi-table coverage or much larger keyspaces:
 
 * 64-way data-parallel S-boxes laid out as gate networks (Matthew Kwan or
   Roman Rusakov style). Each thread processes 64 keys simultaneously by
@@ -228,8 +270,8 @@ register file).
 The chain index is the only state that matters for resumability. Running
 
 ```
-desrt build --start-chain-id 0          --chains 311900000 --gpu 0 --out ./tab &
-desrt build --start-chain-id 311900000  --chains 311900000 --gpu 1 --out ./tab &
+desrt build --start-chain-id 0      --chains 25000 --gpu 0 --out ./tab &
+desrt build --start-chain-id 25000  --chains 25000 --gpu 1 --out ./tab &
 ```
 
 splits the work across two GPUs and writes into the same `./tab/raw`

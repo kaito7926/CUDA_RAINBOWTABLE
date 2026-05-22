@@ -11,11 +11,17 @@ side effects.
 ```
 desrt plan
     [--chain-len N]   default 1048576
-    [--chains N]      default 8100000   (~95% coverage of N = 36^8)
+    [--chains N]      default 50000     (~95% coverage of N = 19^8)
     [--tables N]      default 1
     [--shards N]      default 4096
     [--rate GH/s]     default 10.0      (used for the time estimate only)
 ```
+
+> The internal keyspace is 19⁸, not 36⁸ — see `docs/design.md` §1 for the
+> DES parity-collapse derivation. Building with the older `--chains 8100000`
+> sizes will *oversaturate* and `desrt stats` will report ~26K unique
+> endpoints out of 8.1M records (0.3% of records), because every chain step
+> collapses through the 19⁸ effective bottleneck.
 
 The "model coverage" line is the upper-bound `1 - exp(-LC/N)`; chain merges
 reduce real coverage. See `docs/design.md` §3.
@@ -44,7 +50,7 @@ per-shard raw files at `<out>/raw/shard_NNNNNN.bin`.
 ```
 desrt build
     --out DIR             required
-    [--chains N]            default 1000000  (use 8100000 for ~95% coverage)
+    [--chains N]            default 50000    (~95% coverage of N = 19^8)
     [--start-chain-id N]    default 0        (for resume/multi-GPU)
     [--chain-len N]         default 1048576
     [--table-id N]          default 0
@@ -91,9 +97,14 @@ desrt make-target
     [--count N]          default 8
     [--seed N]           default = wall clock
     [--plaintext 0xHEX]  default 0x1122334455667788
-    [--key STRING]       8 chars from [a-z0-9]; only this one target is emitted
-    [--key-index N]      0 <= N < 36^8;     only this one target is emitted
+    [--key STRING]       8 chars from [a-z0-9]; auto-canonicalised internally
+    [--key-index N]      0 <= N < 19^8;     only this one target is emitted
 ```
+
+The emitted `<key>` column is the canonical 19-char form (`abdfhjlnprtvxz02468`)
+even if you typed something with non-canonical parity (e.g. you passed
+`--key abcdefgh`, you'll see `abddffhh` in the output). The ciphertext is
+`DES(canonical_key, plaintext)`, which is exactly what `desrt crack` recovers.
 
 The `--key`/`--key-index` form is useful for hand-constructed crack tests:
 pick a chain start, walk a few steps on paper, hand the ciphertext to

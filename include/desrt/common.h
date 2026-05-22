@@ -27,24 +27,41 @@ constexpr uint64_t DEFAULT_PLAINTEXT = 0x1122334455667788ULL;
 
 // Charset and key length. Keep these constexpr so the constants propagate.
 //
-// Charset is the 36-character lowercase-alphanumeric set
-// "abcdefghijklmnopqrstuvwxyz0123456789".
-//   digit  0..25 -> 'a'..'z'
-//   digit 26..35 -> '0'..'9'
+// IMPORTANT — DES PC-1 drops parity bits, collapsing the ASCII alphabet.
+// PC-1 discards bit 0 (LSB) of each input key byte. Two ASCII characters
+// that differ only in their LSB therefore produce the *same* DES key.
+// Within "abcdefghijklmnopqrstuvwxyz0123456789" the parity classes are
+//   {a} {b,c} {d,e} {f,g} {h,i} {j,k} {l,m} {n,o} {p,q} {r,s}
+//   {t,u} {v,w} {x,y} {z}                                       <- 14 letters
+//   {0,1} {2,3} {4,5} {6,7} {8,9}                               <- 5 digits
+// → only 19 distinct DES-key bytes per position, giving an effective
+// keyspace of 19^8, not 36^8. If we used the naive 36-char charset for
+// chain construction, every chain step would collapse through that 19^8
+// bottleneck and chains would merge at the rate m^2 / (2 · 19^8). That is
+// exactly what produces the catastrophic stats one sees with a 36-char
+// build: 8.1M records collapsing to a few tens of thousands of unique
+// endpoints.
 //
-// N = 36^8 = 2,821,109,907,456 (~2^41.4), about 77x smaller than the 62^8
-// alnum keyspace. Coverage and table-size figures in `desrt plan` follow
-// directly from this.
-constexpr int CHARSET_LEN = 36;
+// Fix: work in the canonical 19-char alphabet
+//   "abdfhjlnprtvxz02468"
+// where each character is the unique parity-class representative. We get
+// an injective mapping idx → DES key (after PC-1) and the rainbow-table
+// math is honest. `string_to_idx` still accepts any of the original 36
+// `[a-z0-9]` characters and canonicalises them, so a user typing
+// "abcdefgh" still produces a valid idx — the recovered key prints in
+// canonical form (here "abddffhh"), which is DES-equivalent.
+//
+// N = 19^8 = 16,983,563,041 (~2^33.98).
+constexpr int CHARSET_LEN = 19;
 constexpr int KEY_LEN = 8;
 
 constexpr uint64_t N_KEYSPACE =
-    36ULL * 36ULL * 36ULL * 36ULL * 36ULL * 36ULL * 36ULL * 36ULL;
+    19ULL * 19ULL * 19ULL * 19ULL * 19ULL * 19ULL * 19ULL * 19ULL;
 
 // LCG constants (Knuth's MMIX). Used to map chain_id -> startpoint index.
 // Note: the LCG runs mod 2^64, and we then take mod N. This is not a
-// permutation over [0, N), but for ~8M draws against N≈2.82e12, accidental
-// startpoint collisions are still negligible.
+// permutation over [0, N), but for ~50K draws against N=19^8≈1.7e10,
+// accidental startpoint collisions are still negligible.
 constexpr uint64_t LCG_A = 6364136223846793005ULL;
 constexpr uint64_t LCG_B = 1442695040888963407ULL;
 
@@ -67,21 +84,39 @@ DESRT_HD DESRT_INLINE uint64_t splitmix64(uint64_t x) {
 }
 
 // ---------- charset <-> index <-> packed key ----------
-// The "key" returned is a 64-bit value with the FIRST character of the 8-char
-// string in the MOST significant byte (byte 7), so the bit-1 (MSB) of the
-// value is the MSB of the first character. This matches the byte order that
-// DES PC-1 expects.
+//
+// Canonical digit ↔ ASCII mapping (19 classes):
+//   digit  0           ->  'a'
+//   digit  1..12       ->  'b','d','f','h','j','l','n','p','r','t','v','x'
+//   digit 13           ->  'z'
+//   digit 14..18       ->  '0','2','4','6','8'
+// Each canonical character lies in a unique DES parity class — no two
+// canonical chars share their upper 7 bits, so packing eight canonical
+// chars into a uint64 produces a key that PC-1 maps injectively from idx.
+//
+// The "key" returned is a 64-bit value with the FIRST character of the
+// 8-char string in the MOST significant byte (byte 7).
+
+// Map a digit ∈ [0, 19) to its canonical ASCII character.
+DESRT_HD DESRT_INLINE uint8_t canonical_char(uint32_t digit) {
+    // digit  0     -> 'a'  (0x61)         (alone in parity class 0x30)
+    // digit  1..12 -> 0x60 + 2·digit      (b=0x62, d=0x64, ..., x=0x78)
+    // digit 13     -> 'z'  (0x7a)         (alone in parity class 0x3d)
+    // digit 14..18 -> '0' + 2·(digit-14)  (0,2,4,6,8)
+    if (digit == 0)  return static_cast<uint8_t>('a');
+    if (digit < 14)  return static_cast<uint8_t>(0x60u + 2u * digit);
+    return static_cast<uint8_t>('0' + 2u * (digit - 14u));
+}
+
 DESRT_HD DESRT_INLINE uint64_t idx_to_key(uint64_t idx) {
     uint64_t key = 0;
-    // Iteration i=0 extracts the least significant base-36 digit, which
+    // Iteration i=0 extracts the least significant base-19 digit, which
     // corresponds to the LAST character of the 8-char string.
     DESRT_UNROLL
     for (int i = 0; i < 8; i++) {
         uint32_t digit = static_cast<uint32_t>(idx % static_cast<uint64_t>(CHARSET_LEN));
         idx /= static_cast<uint64_t>(CHARSET_LEN);
-        uint8_t c;
-        if (digit < 26) c = static_cast<uint8_t>('a' + digit);
-        else            c = static_cast<uint8_t>('0' + (digit - 26));
+        uint8_t c = canonical_char(digit);
         // Place byte i at the i-th byte from LSB. i=0 -> LSB (last char),
         // i=7 -> MSB byte (first char).
         key |= (static_cast<uint64_t>(c) << (i * 8));
@@ -98,16 +133,35 @@ DESRT_HD DESRT_INLINE void key_to_string(uint64_t key, char out[8]) {
     }
 }
 
-// Returns UINT64_MAX if any character is outside the charset.
+// Accepts any character in [a-z0-9] and canonicalises it to its parity-class
+// digit. Returns UINT64_MAX if any character is outside that 36-char set.
+//   'a'           -> 0
+//   'b','c'       -> 1
+//   'd','e'       -> 2
+//   ...
+//   'x','y'       -> 12
+//   'z'           -> 13
+//   '0','1'       -> 14
+//   '2','3'       -> 15
+//   '4','5'       -> 16
+//   '6','7'       -> 17
+//   '8','9'       -> 18
 DESRT_HD DESRT_INLINE uint64_t string_to_idx(const char s[8]) {
     uint64_t idx = 0;
     DESRT_UNROLL
     for (int i = 0; i < 8; i++) {
         char c = s[i];
         uint32_t d;
-        if (c >= 'a' && c <= 'z')      d = c - 'a';
-        else if (c >= '0' && c <= '9') d = 26 + (c - '0');
-        else                           return UINT64_MAX;
+        if (c >= 'a' && c <= 'z') {
+            // ('a'-'a'+1)/2 = 0, ('b'-'a'+1)/2 = 1, ('c'-'a'+1)/2 = 1, ...
+            // ('y'-'a'+1)/2 = 12, ('z'-'a'+1)/2 = 13.
+            d = (static_cast<uint32_t>(c) - 'a' + 1u) / 2u;
+        } else if (c >= '0' && c <= '9') {
+            // ('0'-'0')/2 = 0, ('1'-'0')/2 = 0, ..., ('9'-'0')/2 = 4.
+            d = 14u + (static_cast<uint32_t>(c) - '0') / 2u;
+        } else {
+            return UINT64_MAX;
+        }
         idx = idx * static_cast<uint64_t>(CHARSET_LEN) + d;
     }
     return idx;
