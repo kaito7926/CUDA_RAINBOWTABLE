@@ -103,17 +103,24 @@ For the full-size run, target ~95% coverage of the 19⁸ DES-effective keyspace:
 ./build/desrt stats  --table /data/desrt-table --shards 4096
 ```
 
-Expected `desrt stats` output for a healthy build:
+Expected `desrt stats` output for a healthy build at `mt/N ≈ 3`:
 
 ```
 total records      : 50000
-total unique eps   : ~42000–48000  (~0.85–0.95 of records)
-records/shard      : min ~5  max ~20  mean ≈ 12  empty=few
+total unique eps   : ~19,500–19,800   (≈ 0.39 of records)
+records/shard      : min 0  max ~50   mean 12.2   empty ≈ 30
 ```
 
-If you instead see `total unique eps` at a few thousand or `0.003` of records,
-you are running an oversaturated build (e.g. 8.1 M chains over the 19⁸ space).
-Reduce `--chains` to ~50,000 — see `docs/design.md` §3.
+> **`unique_eps/records` is NOT coverage.** It measures effective chains
+> surviving merges. For a rainbow table tuned to 95% coverage (`mt/N ≈ 3`),
+> the merge ODE gives `m_t = 1/(t/(2N) + 1/m₀) ≈ 0.4 · m₀`. That low ratio
+> is the *cost* of oversampling to get high coverage — not a build bug.
+> The real coverage is measured by `desrt crack` on random targets;
+> expect 85–95% hit rate.
+>
+> If you instead see `total unique eps` at a few thousand or `0.003` of
+> records, you are running an oversaturated build (e.g. 8.1M chains over
+> the 19⁸ space). Reduce `--chains` to ~50,000.
 
 ## Validating DES
 

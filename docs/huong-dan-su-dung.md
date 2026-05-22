@@ -314,23 +314,30 @@ Output mẫu (build "khỏe"):
 ```
 desrt stats: table=./tab shards=4096 jobs=24 (read in 0.05s)
   total records      : 50000
-  total unique eps   : ~42000–48000  (0.85–0.95 of records)
+  total unique eps   : ~19500–19800   (≈ 0.39 of records)
   raw bytes (16B/rec): 0.0008 GiB
-  records/shard      : min ~5  max ~20  mean=12.2  empty=~few
+  records/shard      : min 0  max ~50  mean=12.2  empty≈30
 ```
 
 Đọc các con số:
 
-- **unique endpoints / records** càng gần 100% càng tốt. Mức ~85–95% là bình
-  thường ở `L·C/N ≈ 3`; phần thiếu là chain merges.
-- **records/shard** phân bố theo Poisson(mean=12.2), kỳ vọng stdev ≈ √12 ≈
-  3.5 → min/max nằm trong vài lần stdev. Nếu max >> mean nhiều thì phân
-  phối endpoint không đều → kiểm tra reduction function.
+- **unique endpoints / records ≈ 0.4** — đây **KHÔNG phải coverage**! Đây là
+  tỉ lệ "chain còn sống sau merge". Công thức nghiệm ODE rainbow:
+  ```
+  m_t = 1 / (t/(2N) + 1/m₀) ≈ 19,646   (cho m₀=50K, t=2²⁰, N=19⁸)
+  ```
+  cho ra ~0.4·m₀ khi `m·t/N ≈ 3`. Phủ thực 95% **đòi hỏi** merge cao, đó là
+  cái giá phải trả.
+- **Coverage thực** chỉ đo được bằng `desrt crack` với target ngẫu nhiên:
+  expect hit rate ~85–95%.
+- **records/shard** phân bố theo "Poisson nhóm" (mỗi unique endpoint kéo
+  theo ~2.55 record cùng shard). Empty shards ≈ `4096 · exp(-unique_eps/4096)`
+  → với 19,634 unique eps thì ~34 shard rỗng. Max records/shard có thể đến
+  vài chục do heavy-tail của duplicate count — bình thường.
 
 > **Triệu chứng "build bị bệnh"**: nếu `total unique eps` rất nhỏ so với
-> `total records` (ví dụ 0.003 of records), chain đang merge thảm khốc. Xem
-> §11 "Lỗi thường gặp" — gần như chắc chắn do build oversaturate (chains
-> nhiều hơn `3 · N_eff / chain_len`).
+> nghiệm ODE (vd 26K trên 8.1M records = 0.003, chỉ bằng 1/130 kỳ vọng),
+> chain đang merge thảm khốc do oversaturate. Xem §11 "Lỗi thường gặp".
 
 Thêm `--per-shard` để in từng dòng cho mỗi shard (debug phân bố):
 

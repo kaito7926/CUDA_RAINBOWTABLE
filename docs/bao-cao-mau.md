@@ -444,14 +444,19 @@ Lệnh `desrt stats --table ./tab`:
 
 | Chỉ số | Giá trị thực đo | Ghi chú |
 |---|---|---|
-| Tổng record | <<>> | = `chains` nếu không có lỗi |
-| Endpoint duy nhất | <<>> | mong đợi 42K–48K (0.85–0.95 × 50K) |
-| Mean records/shard | <<>> | mong đợi ≈ 12.2 |
-| Stdev records/shard | <<>> | Poisson stdev ≈ √12 ≈ 3.5 |
-| Min / Max records/shard | <<>> / <<>> | min ~5, max ~25 (đuôi Poisson) |
+| Tổng record | <<50,000>> | = `chains` nếu không có lỗi |
+| Endpoint duy nhất | <<≈19,646>> | nghiệm ODE merge `1/(t/(2N)+1/m₀)` |
+| Mean records/shard | <<12.2>> | = `m / num_shards` |
+| Min records/shard | <<>> | mong đợi 0 (có shard rỗng) |
+| Max records/shard | <<>> | có thể vài chục (heavy-tail duplicate) |
+| Shard rỗng | <<>> | `4096 · exp(-19646/4096) ≈ 34` |
 
-Nếu `unique_endpoints / records < 0.5` → đã build oversaturate hoặc
-reduction function sai (xem §4.3.2 về bug PC-1 sụp đổ).
+> **`unique_endpoints/records` ≠ coverage**. Đó là tỉ lệ chain sống sót sau
+> merge. Với `m·t/N = 3` (chỉnh để phủ 95%), tỉ lệ này ≈ 0.4. Coverage thực
+> đo bằng `desrt crack` (§5.6).
+
+Nếu `unique_eps` lệch nghiệm ODE >10% (vd <17,500 hoặc >22,000) → kiểm tra
+reduction function (xem §4.3.2 về bug PC-1 sụp đổ).
 
 ### 5.6 Thử crack
 
@@ -506,13 +511,22 @@ Thực đo: <<XX%>>. Sai khác do:
 
 ### 6.1.1 So sánh trước/sau khi sửa bug PC-1
 
-| Cấu hình | `chains` | `total records` | `unique eps` | uniques/records |
-|---|---|---|---|---|
-| Trước (charset 36, N=36⁸) | 8,100,000 | 8,100,000 | 26,319 | **0.32%** |
-| Sau (charset 19, N=19⁸) | 50,000 | 50,000 | <<>> | <<>> |
+| Cấu hình | `chains` (m) | `m·t/N_eff` | `unique eps` thực | nghiệm ODE | sai số |
+|---|---|---|---|---|---|
+| Trước (charset 36 sử dụng N=36⁸) | 8,100,000 | 500 | 26,319 | 33,866 | 22% |
+| Sau (charset 19 canonical, N=19⁸) | 50,000 | 3.087 | <<19,634>> | 19,646 | <<0.06%>> |
 
-Sự khác biệt **không phải** vì giảm số chain — mà vì sửa được sự sụp đổ
-DES PC-1. Build cũ "lãng phí" 166× compute cho cùng phủ.
+Quan sát quan trọng:
+
+- Build cũ "lãng phí" 162× compute (8.1M / 50K) mà vẫn chỉ có 26K endpoint
+  duy nhất — chain merge thảm khốc do `m·t/N_eff = 500 ≫ 3`.
+- Build mới khớp nghiệm ODE đến 0.06%, chứng tỏ reduction function uniform
+  mod `N_eff` và chain dynamics đúng như lý thuyết rainbow.
+
+Hai cột "trước" và "sau" có ý nghĩa khác nhau: cột trước minh họa **sự
+sụp đổ PC-1** (chains còn 0.32% là dấu hiệu bệnh), cột sau minh họa
+**rainbow table chạy đúng** (chain merge theo lý thuyết, coverage ~95%
+đo bằng crack §5.6, không phải đọc qua `unique_eps/records`).
 
 ### 6.2 Đánh giá reduction function
 
