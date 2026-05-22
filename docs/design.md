@@ -91,9 +91,9 @@ Record { endpoint, start_idx }
 ```
 
 `LCG_A = 6364136223846793005`, `LCG_B = 1442695040888963407` — Knuth's MMIX
-constants. The LCG runs `mod 2^64` and we take `mod N` afterwards. With ~50K
-draws against `N ≈ 1.70 × 10^10`, accidental start-point collisions are
-negligible.
+constants. The LCG runs `mod 2^64` and we take `mod N` afterwards. With
+~12.4M draws against `N ≈ 1.70 × 10^10`, accidental start-point collisions
+are still <1% (`m²/(2N) ≈ 4.5 · 10⁻³`).
 
 The reduction is
 
@@ -125,12 +125,39 @@ For a single table:
 p_one_table ≈ 1 - exp(- chain_len * chains_per_table / N)
 ```
 
-With `chain_len = 2^20 = 1,048,576` and `chains = 50,000`:
+With `chain_len = 4096 = 2^12` and `chains = 12,440,000`:
 
 ```
-chain_len * chains / N = 5.243e+10 / 1.698e+10 = 3.087
-p_one_table         ≈ 1 - exp(-3.087) ≈ 0.9544
+chain_len * chains / N = 5.095e+10 / 1.698e+10 = 3.000
+p_one_table         ≈ 1 - exp(-3.000) ≈ 0.9502
 ```
+
+### 3.1 Picking `t` and `m`
+
+The product `m · t` determines coverage. The split between `m` and `t` is a
+free parameter that controls the **build / crack / storage** trade-off:
+
+| Quantity     | Cost in (m, t) |
+|---|---|
+| Build cost   | O(m · t)       |
+| Crack cost   | O(T · t² / 2)  — for T targets |
+| Storage      | O(m)           |
+
+Holding `m·t = 3N` constant, doubling `m` while halving `t`:
+- Build: unchanged (`m · t` constant).
+- Crack: drops 4× (`t²` halves twice).
+- Storage: doubles.
+
+We pick `t = 4096`, `m = 12.44M` because:
+- Build cost `~5.1e10` DES ops ≈ 5 min on one L4.
+- Crack cost `T · t² / 2 = 32 · 4096²/2 ≈ 2.7e8` ops ≈ 2 s on one L4 for
+  T = 32 targets.
+- Storage 200 MiB — trivially small vs the 77 GiB disk budget.
+
+The previous default of `t = 2^20` gave a tiny table (800 KiB) but
+catastrophic crack cost: `T · t² / 2 = 32 · 2³⁹ ≈ 1.76 · 10¹³` ops ≈
+**30 hours per crack invocation**, which the user observed as a "stuck"
+process. Crack time scales as `t²`, so this choice is highly sensitive.
 
 This is the upper bound that ignores chain merges. Real tables typically reach
 `0.85 × p_one_table` to `0.95 × p_one_table` depending on chain-len. With
@@ -153,15 +180,15 @@ struct Record { uint64_t endpoint; uint64_t startpoint; };
 #pragma pack(pop)
 ```
 
-50,000 × 16 B = **~800 KiB** per table. We partition by
+12,440,000 × 16 B = **~200 MiB** per table. We partition by
 
 ```
 shard_id = endpoint mod num_shards
 ```
 
-with `num_shards ∈ {2048, 4096}`. 4096 shards gives ~12 records per shard on
-average — small, but the shard layout is shared with the larger
-multi-table / multi-`table_id` cases, so we keep it. The on-disk layout:
+with `num_shards ∈ {2048, 4096}`. 4096 shards gives ~3,037 records per
+shard on average (~48 KiB / shard) which fits in RAM trivially during the
+sort step. The on-disk layout:
 
 ```
 <root>/raw/shard_NNNNNN.bin       (append-only during build)
@@ -217,8 +244,19 @@ endpoint_candidate = y
 ```
 
 The GPU computes one candidate per thread, with `num_targets * chain_len`
-threads total (host bound below 4 GiB by capping the candidate buffer to
-8 B/thread). On the host:
+threads total. **The dominant cost is the chain-step inner loop**: each
+thread does up to `t - p - 1` chain steps, averaging `t/2`. Total work:
+
+```
+W_crack = T · t · (t/2) = T · t² / 2
+```
+
+At `t = 4096`, `T = 32`: `W = 2.7·10⁸` DES ops ≈ 2 s at 150 MH/s.
+At `t = 2²⁰`, `T = 32`: `W = 1.76·10¹³` ops ≈ **30 h** — this was the
+original bug (kernel ran for hours with no progress output because
+`cudaDeviceSynchronize()` blocked the host).
+
+On the host:
 
 1. Bucket candidates by `shard = endpoint % num_shards` and sort by
    `(shard, candidate)`.
@@ -229,10 +267,15 @@ threads total (host bound below 4 GiB by capping the candidate buffer to
    `DES(key, plaintext) == CT`. False positives (different chain converging
    to the same endpoint) fail this check.
 
-Step 2 is the I/O-heavy phase. With 4096 shards and a uniform candidate
-distribution, every shard is loaded once → ~10 GiB of disk reads for the full
-table. Subsequent target groups within a single `desrt crack` invocation
-share the load by being merged into the same probe set.
+With the current defaults (`T = 32`, `t = 4096`, `m = 12.44M`, 4096 shards):
+
+- Candidate count = `T · t = 131,072`. Buffer 1 MiB on host.
+- Candidates per shard ≈ 32 on average.
+- Shard walk loads ~4096 × 48 KiB = ~200 MiB of disk → seconds even on HDD.
+- Replay-verify per hit ≈ t/2 = 2048 DES on CPU ≈ 1 ms.
+
+Total wall time for `T = 32` crack: ~2 s (GPU) + ~1 s (shard I/O) + <1 s
+(verify) = under 5 s end-to-end.
 
 ## 7. Performance — where the time goes
 
@@ -243,7 +286,7 @@ something like:
 
 * 50 – 300 MH/s **per GPU**
 * 100 – 600 MH/s across both L4s
-* full 50K-chain build (×1,048,576 = ~5.24e10 DES ops): a few minutes on a
+* full 12.44M-chain build (×4096 = ~5.10e10 DES ops): a few minutes on a
   single L4 — quick enough that you can iterate on the design.
   A useful sanity check is `desrt bench` followed by
   `desrt build --chains <small> --chain-len <small>` to extrapolate.
@@ -270,8 +313,8 @@ register file).
 The chain index is the only state that matters for resumability. Running
 
 ```
-desrt build --start-chain-id 0      --chains 25000 --gpu 0 --out ./tab &
-desrt build --start-chain-id 25000  --chains 25000 --gpu 1 --out ./tab &
+desrt build --start-chain-id 0       --chains 6220000 --gpu 0 --out ./tab &
+desrt build --start-chain-id 6220000 --chains 6220000 --gpu 1 --out ./tab &
 ```
 
 splits the work across two GPUs and writes into the same `./tab/raw`

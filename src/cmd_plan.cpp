@@ -1,11 +1,18 @@
 // `desrt plan` — back-of-the-envelope size, coverage, and build-time numbers.
 //
 // Inputs (with sensible defaults for the 19^8 DES-effective keyspace):
-//   --chain-len    chain length (default 1048576)
-//   --chains       chain count per table (default 50000)
+//   --chain-len    chain length (default 4096)
+//   --chains       chain count per table (default 12,440,000)
 //   --tables       number of tables (default 1)
 //   --shards       number of shards on disk (default 4096)
 //   --rate         assumed end-to-end DES rate in GH/s (default 10.0)
+//
+// We picked (t = 4096, m ≈ 12.44M) instead of (t = 2^20, m = 50K) because
+// crack cost scales as T·t²/2 while build cost scales as m·t. With
+// m·t/N ≈ 3 fixed (95% coverage), shrinking t by 256× and growing m by
+// 256× preserves build cost (5.1e10 ops) but reduces crack work by 65,536×.
+// At t = 4096, a 32-target crack runs in ~2 s on a single L4 instead of
+// ~30 hours. Table size grows from 0.8 MiB to ~200 MiB — well within disk.
 //
 // Coverage uses the standard rainbow-table model: probability that a uniformly
 // random key index lands somewhere in the table is approximately
@@ -37,11 +44,12 @@ int cmd_plan(int argc, char** argv) {
 
     // Defaults tuned for the 19-char canonical (DES-injective) keyspace:
     //   N = 19^8 = 16,983,563,041 ≈ 1.70e10.
-    // For ~95% model coverage we need chain_len * chains ≈ 3·N ≈ 5.10e10,
-    // so with chain_len = 2^20 = 1,048,576 we want chains ≈ 48,600. Round
-    // up a little for headroom against the chain-merge slack (~10–15%).
-    const uint32_t chain_len = a.opt_u32("--chain-len", 1048576);
-    const uint64_t chains    = a.opt_u64("--chains",    50000ULL);
+    // For ~95% model coverage we need chain_len * chains ≈ 3·N ≈ 5.10e10.
+    // We pick chain_len = 4096 = 2^12 (small for fast crack: T·t²/2 ≈ 2.7e8
+    // ops for T=32 targets ≈ 2 s on one L4) and chains ≈ 12.44M to keep
+    // m·t/N ≈ 3.
+    const uint32_t chain_len = a.opt_u32("--chain-len", 4096);
+    const uint64_t chains    = a.opt_u64("--chains",    12440000ULL);
     const uint32_t tables    = a.opt_u32("--tables",    1);
     const uint32_t shards    = a.opt_u32("--shards",    4096);
     const double   rate_ghps = a.opt_double("--rate",   10.0);

@@ -10,8 +10,8 @@ side effects.
 
 ```
 desrt plan
-    [--chain-len N]   default 1048576
-    [--chains N]      default 50000     (~95% coverage of N = 19^8)
+    [--chain-len N]   default 4096      (small for fast crack — see §3.1)
+    [--chains N]      default 12440000  (~95% coverage of N = 19^8)
     [--tables N]      default 1
     [--shards N]      default 4096
     [--rate GH/s]     default 10.0      (used for the time estimate only)
@@ -22,6 +22,11 @@ desrt plan
 > sizes will *oversaturate* and `desrt stats` will report ~26K unique
 > endpoints out of 8.1M records (0.3% of records), because every chain step
 > collapses through the 19⁸ effective bottleneck.
+>
+> **Crack cost scales as `T · t² / 2`.** With `t = 2²⁰` and 32 targets,
+> crack takes ~30 hours and produces no stdout/stderr because the kernel
+> blocks the host. With `t = 4096` it finishes in ~2 s. See `docs/design.md`
+> §3.1 for the t/m trade-off.
 
 The "model coverage" line is the upper-bound `1 - exp(-LC/N)`; chain merges
 reduce real coverage. See `docs/design.md` §3.
@@ -50,9 +55,9 @@ per-shard raw files at `<out>/raw/shard_NNNNNN.bin`.
 ```
 desrt build
     --out DIR             required
-    [--chains N]            default 50000    (~95% coverage of N = 19^8)
-    [--start-chain-id N]    default 0        (for resume/multi-GPU)
-    [--chain-len N]         default 1048576
+    [--chains N]            default 12440000  (~95% coverage of N = 19^8)
+    [--start-chain-id N]    default 0         (for resume/multi-GPU)
+    [--chain-len N]         default 4096      (small for fast crack)
     [--table-id N]          default 0
     [--shards N]            default 4096
     [--batch-size N]        default 65536    (chains per kernel launch)
@@ -119,7 +124,7 @@ desrt crack
     --table DIR           required, points at a sorted-shards directory
     --target FILE         or use --ct
     --ct HEX              single-target shortcut
-    [--chain-len N]       default 1048576    (must match the build)
+    [--chain-len N]       default 4096       (must match the build)
     [--table-id N]        default 0          (must match the build)
     [--shards N]          default 4096       (must match the build)
     [--gpu DEVICE]        default 0

@@ -14,9 +14,16 @@ alnum keys** (`[a-z0-9]^8`).
 > recovered key will simply print in canonical form (here "abddffhh"). See
 > `docs/design.md` §1 for the full derivation.
 
-`N = 19⁸ = 16,983,563,041 (≈ 1.70 × 10¹⁰)`. With `chain_len = 2^20` a single
-table reaches ~95% model coverage at about **50,000 chains** (raw size
-≈ 800 KiB).
+`N = 19⁸ = 16,983,563,041 (≈ 1.70 × 10¹⁰)`. With `chain_len = 4096` a single
+table reaches ~95% model coverage at about **12.44 M chains** (raw size
+≈ 200 MiB).
+
+> **Why such a small `chain_len`?** Rainbow lookup cost scales as `T·t²/2`,
+> while build cost scales as `m·t`. Holding the coverage product `m·t/N ≈ 3`
+> fixed, shrinking `t` from 2²⁰ to 2¹² preserves build cost (~5·10¹⁰ DES
+> ops, ~5 minutes on an L4) but cuts crack cost by 256² × from ~30 hours to
+> **~2 seconds for 32 targets**. The price is a larger table (0.8 MiB →
+> 200 MiB), trivially affordable on the 77 GiB disk.
 
 ## Layout
 
@@ -74,7 +81,7 @@ verify correctness end-to-end:
 ./build/desrt bench --host-iters 100000 --gpu-threads 16384 --gpu-iters 256
 
 # 2. Plan numbers (defaults target ~95% coverage of N = 19^8).
-./build/desrt plan --chain-len 1048576 --chains 50000 --shards 4096
+./build/desrt plan --chain-len 4096 --chains 12440000 --shards 4096
 
 # 3. Smoke build: 2k chains of length 1024.
 ./build/desrt build --out ./tab --chains 2000 --chain-len 1024 \
@@ -97,18 +104,20 @@ For the full-size run, target ~95% coverage of the 19⁸ DES-effective keyspace:
 
 ```bash
 ./build/desrt build  --out /data/desrt-table --table-id 0 \
-                     --chains 50000 --chain-len 1048576 --shards 4096 \
+                     --chains 12440000 --chain-len 4096 --shards 4096 \
                      --batch-size 65536 --shard-buffer-kb 64
 ./build/desrt sort   --in    /data/desrt-table --shards 4096 --jobs 8
 ./build/desrt stats  --table /data/desrt-table --shards 4096
+./build/desrt make-target --out targets.txt --count 32 --seed 42
+./build/desrt crack  --table /data/desrt-table --target targets.txt   # ~2 s
 ```
 
 Expected `desrt stats` output for a healthy build at `mt/N ≈ 3`:
 
 ```
-total records      : 50000
-total unique eps   : ~19,500–19,800   (≈ 0.39 of records)
-records/shard      : min 0  max ~50   mean 12.2   empty ≈ 30
+total records      : 12,440,000
+total unique eps   : ~4,900,000    (≈ 0.39 of records — chain merges)
+records/shard      : min ~2,500  max ~4,000  mean 3,037
 ```
 
 > **`unique_eps/records` is NOT coverage.** It measures effective chains

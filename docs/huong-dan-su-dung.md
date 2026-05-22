@@ -122,32 +122,38 @@ desrt plan
   accepts at input   : [a-z0-9] (auto-canonicalised in string_to_idx)
   key length         : 8
   N (keyspace)       : 16983563041 (19^8, DES-injective)
-  chain_len          : 1048576
-  chains             : 50000
+  chain_len          : 4096
+  chains             : 12440000
   tables             : 1
   shards             : 4096
   rate               : 10.00 GH/s (giả định)
 
-  L * C / N           ≈ 3.087
-  p_one_table         ≈ 0.9544     (≈95% upper bound)
-  raw size per table  ≈ 0.8 MiB
-  total DES ops       ≈ 5.24e+10
-  est. build time     ≈ 5.24 s     (ở 10 GH/s)
+  L * C / N           ≈ 3.000
+  p_one_table         ≈ 0.9502    (≈95% upper bound)
+  raw size per table  ≈ 199.7 MiB
+  total DES ops       ≈ 5.10e+10
+  est. build time     ≈ 5.10 s    (ở 10 GH/s, thực tế ~5 phút trên L4)
 ```
 
 Ý nghĩa các con số:
 
-- `L * C / N ≈ 3.087` — trung bình mỗi vị trí của không gian khóa được
+- `L * C / N ≈ 3.0` — trung bình mỗi vị trí của không gian khóa được
   "thăm" ≈ 3 lần. Phủ cao, nhưng vẫn có chain merge.
-- `p_one_table ≈ 0.9544` — chặn trên của xác suất bẻ một khóa ngẫu nhiên
+- `p_one_table ≈ 0.9502` — chặn trên của xác suất bẻ một khóa ngẫu nhiên
   bằng **một** bảng. Thực tế thấp hơn (~85–95% của con số này).
-- `est. build time` — chỉ là ước lượng theo `--rate 10 GH/s`. Số thực
+- `est. build time` — ước lượng theo `--rate 10 GH/s`. Số thực
   trên L4 ~150 MH/s sẽ là vài phút.
+
+> **Vì sao `chain_len` chỉ 4096?** Chi phí crack scale theo `T · t²/2`,
+> trong khi build scale theo `m · t`. Giữ `m·t/N ≈ 3` (phủ 95%), giảm `t`
+> 256× và tăng `m` 256× → build cost giữ nguyên (vài phút), nhưng crack
+> 32 target giảm từ **~30 giờ xuống còn ~2 giây**. Đổi lại table to hơn
+> (0.8 MiB → 200 MiB) — không đáng kể với đĩa 77 GiB.
 
 Tham số quan trọng để thử:
 
 ```bash
-desrt plan --chain-len 524288 --chains 100000        # chain ngắn hơn, nhiều chain hơn
+desrt plan --chain-len 2048 --chains 24880000        # crack nhanh hơn 4×, table 400 MiB
 desrt plan --tables 2                                # 2 bảng, mỗi bảng table_id khác nhau
 ```
 
@@ -223,13 +229,14 @@ tab_smoke/
 
 ### 4.2 Bảng đầy đủ cho demo
 
-Với keyspace hiệu dụng `19^8`, bảng đầy đủ ~0.8 MiB, build vài phút trên L4:
+Với keyspace hiệu dụng `19^8` và config `(t=4096, m=12.44M)`, bảng đầy đủ
+~200 MiB, build vài phút trên L4:
 
 ```bash
 mkdir -p tab
 desrt build --out ./tab \
-    --chains 50000 \
-    --chain-len 1048576 \
+    --chains 12440000 \
+    --chain-len 4096 \
     --shards 4096 \
     --table-id 0 \
     --gpu 0
@@ -238,18 +245,22 @@ desrt build --out ./tab \
 Thời gian thực tế: tùy throughput L4 (~150 MH/s với DES sách giáo khoa),
 khoảng 5–10 phút.
 
-> **Cẩn thận:** đừng đặt `--chains 8100000` như draft trước đó. `N_eff = 19^8`
-> nhỏ hơn 36^8 đến 166×, nên 8.1M chain sẽ oversaturate, chain merge hàng
-> loạt, và `desrt stats` sẽ chỉ ra ~26K endpoint duy nhất trên 8.1M record
-> (xem §11 lỗi thường gặp).
+> **Cẩn thận #1:** đừng đặt `--chains 8100000 --chain-len 1048576` như draft
+> trước đó. `N_eff = 19^8` nhỏ hơn 36^8 đến 166×, nên 8.1M chain sẽ
+> oversaturate (xem §11 lỗi thường gặp).
+>
+> **Cẩn thận #2:** đừng đặt `--chain-len 1048576` (kể cả khi chains đã đúng).
+> Crack chi phí scale theo `t²` — với `t = 2²⁰` và 32 target thì crack mất
+> **~30 giờ** thay vì ~2 giây với `t = 4096`. Đây chính là lỗi "crack treo
+> mãi không in gì" của bản trước.
 
 ### 4.3 Chia việc cho 2 GPU (tùy chọn)
 
 Mỗi GPU làm một nửa số chain, ghi vào cùng thư mục:
 
 ```bash
-desrt build --out ./tab --start-chain-id 0     --chains 25000 --gpu 0 &
-desrt build --out ./tab --start-chain-id 25000 --chains 25000 --gpu 1 &
+desrt build --out ./tab --start-chain-id 0       --chains 6220000 --gpu 0 &
+desrt build --out ./tab --start-chain-id 6220000 --chains 6220000 --gpu 1 &
 wait
 ```
 
@@ -313,10 +324,10 @@ Output mẫu (build "khỏe"):
 
 ```
 desrt stats: table=./tab shards=4096 jobs=24 (read in 0.05s)
-  total records      : 50000
-  total unique eps   : ~19500–19800   (≈ 0.39 of records)
-  raw bytes (16B/rec): 0.0008 GiB
-  records/shard      : min 0  max ~50  mean=12.2  empty≈30
+  total records      : 12440000
+  total unique eps   : ~4,900,000   (≈ 0.39 of records)
+  raw bytes (16B/rec): 0.19 GiB
+  records/shard      : min ~2500  max ~4000  mean=3037
 ```
 
 Đọc các con số:
@@ -324,16 +335,13 @@ desrt stats: table=./tab shards=4096 jobs=24 (read in 0.05s)
 - **unique endpoints / records ≈ 0.4** — đây **KHÔNG phải coverage**! Đây là
   tỉ lệ "chain còn sống sau merge". Công thức nghiệm ODE rainbow:
   ```
-  m_t = 1 / (t/(2N) + 1/m₀) ≈ 19,646   (cho m₀=50K, t=2²⁰, N=19⁸)
+  m_t = 1 / (t/(2N) + 1/m₀) ≈ 4.89·10⁶   (cho m₀=12.44M, t=4096, N=19⁸)
   ```
-  cho ra ~0.4·m₀ khi `m·t/N ≈ 3`. Phủ thực 95% **đòi hỏi** merge cao, đó là
+  cho ra ~0.39·m₀ khi `m·t/N ≈ 3`. Phủ thực 95% **đòi hỏi** merge cao, đó là
   cái giá phải trả.
 - **Coverage thực** chỉ đo được bằng `desrt crack` với target ngẫu nhiên:
   expect hit rate ~85–95%.
-- **records/shard** phân bố theo "Poisson nhóm" (mỗi unique endpoint kéo
-  theo ~2.55 record cùng shard). Empty shards ≈ `4096 · exp(-unique_eps/4096)`
-  → với 19,634 unique eps thì ~34 shard rỗng. Max records/shard có thể đến
-  vài chục do heavy-tail của duplicate count — bình thường.
+- **records/shard** phân bố Poisson(mean=3037), stdev ≈ √3037 ≈ 55.
 
 > **Triệu chứng "build bị bệnh"**: nếu `total unique eps` rất nhỏ so với
 > nghiệm ODE (vd 26K trên 8.1M records = 0.003, chỉ bằng 1/130 kỳ vọng),
@@ -401,16 +409,19 @@ desrt crack --table ./tab --target targets.txt
 Output mẫu (theo đúng định dạng `cmd_crack.cu`):
 
 ```
-desrt crack: table=./tab targets=8 chain_len=1048576 shards=4096
-GPU 0: computed 8388608 endpoint candidates in 4.7 s
-host: walked 4096 shards, 31 false positives, lookup phase 2.1 s
+desrt crack: targets=32 chain-len=4096 table-id=0 shards=4096
+  plaintext=0x1122334455667788  gpu=0
+  est. GPU work ~ 2.684e+08 DES ops (T·t²/2). At 150 MH/s ≈ 1.8 s.
+  launching GPU candidate kernel: grid=1024 block=128 threads=131072
+  GPU candidate phase: 1.95 s  (1.311e+05 endpoint computations)
 
-Results (7/8 solved):
-  [HIT ] abcd1234  ct=3F8A9C20D1E47B5C  key=abcd1234  idx=1234567890
-  [HIT ] ze9xq0mz  ct=91F2E58A0C4D6677  key=ze9xq0mz  idx=9876543210
+Results (29/32 solved):
+  [HIT ] abddffhh  ct=3F8A9C20D1E47B5C  key=abddffhh  idx=...
+  [HIT ] ze9xq0mz  ct=91F2E58A0C4D6677  key=ze8xp0lz  idx=...
   ...
-  [MISS] zzzzzzzz  ct=...
-total wall time: 6.9 s
+  [MISS] 88822222  ct=...
+
+shards loaded=3812  false positives=124  lookup=0.83s  total=2.78s
 ```
 
 Diễn giải:
@@ -435,7 +446,7 @@ Exit code: 0 nếu tất cả target tìm được, 4 nếu có ít nhất một
 
 ## 9. Demo end-to-end (chép đúng để chạy)
 
-Toàn bộ demo, ~10–20 phút tùy GPU:
+Toàn bộ demo, ~5–10 phút tùy GPU:
 
 ```bash
 # 0. Build binary
@@ -450,17 +461,17 @@ desrt bench
 desrt plan
 
 # 3. Smoke test pipeline với bảng tí hon (~1 giây)
-desrt build --out ./tab_smoke --chains 2000 --chain-len 4096 --shards 64
+desrt build --out ./tab_smoke --chains 2000 --chain-len 256 --shards 64
 desrt sort  --in  ./tab_smoke --shards 64
 desrt stats --table ./tab_smoke --shards 64
 
-# 4. Bảng demo đầy đủ (~5–10 phút)
-desrt build --out ./tab --chains 50000 --chain-len 1048576 --shards 4096
+# 4. Bảng demo đầy đủ (~5 phút)
+desrt build --out ./tab --chains 12440000 --chain-len 4096 --shards 4096
 desrt sort  --in  ./tab --shards 4096
 desrt stats --table ./tab
 
-# 5. Sinh và crack target
-desrt make-target --out targets.txt --count 16 --seed 42
+# 5. Sinh và crack target (~2 giây)
+desrt make-target --out targets.txt --count 32 --seed 42
 desrt crack --table ./tab --target targets.txt
 ```
 
@@ -510,15 +521,27 @@ ra cùng ciphertext. `desrt crack` có thể trả về **khóa DES-tương đư
 encrypt thử nghiệm vẫn ra đúng ciphertext, nhưng chuỗi ASCII có thể khác
 khóa người dùng đặt.
 
-### "Vì sao chọn `chain_len = 2^20`?"
+### "Vì sao chọn `chain_len = 4096` chứ không phải `2^20`?"
 
-Tradeoff:
+Có 3 cost trong rainbow table, và chúng scale khác nhau:
 
-- Chain dài → ít chain hơn cho cùng phủ → bảng nhỏ hơn (ít record).
-- Chain dài → crack chậm hơn (phải thử nhiều vị trí `p`).
-- Chain dài → nhiều merges (xác suất 2 chain gặp nhau tỉ lệ với `L²`).
+```
+Build cost   = m · t
+Crack cost   = T · t² / 2        ← phụ thuộc t²
+Storage      = m · 16 B
+Coverage     ≈ 1 - exp(-m·t/N)   ← phụ thuộc tích m·t
+```
 
-`2^20` là điểm thường được dùng cho keyspace cỡ `2^40`.
+Giữ phủ cố định (`m·t/N ≈ 3` cho 95%), ta có thể đổi storage lấy crack
+speed: `t` nhỏ + `m` lớn → crack nhanh + table to.
+
+Với `N = 19⁸` và mục tiêu crack <5 giây:
+- `t = 2²⁰` → crack 32 target ≈ 30 GIỜ. Không chấp nhận được.
+- `t = 4096` → crack 32 target ≈ 2 giây. Table 200 MiB — vừa đĩa.
+- `t = 1024` → crack 32 target ≈ 0.1 giây. Table 800 MiB.
+
+`t = 4096` là sweet spot cho demo: crack tức thì, build chỉ 5 phút, table
+fits in memory.
 
 ---
 
@@ -529,7 +552,8 @@ Tradeoff:
 | `identifier ... is undefined in device code` cho `IP`, `PC1`, ... | Build cũ trước commit `02ae9de`. Pull mới nhất rồi build lại. |
 | KAT FIPS-46 FAIL | Có chỉnh tay `des.h` → kiểm tra lại bit numbering (bit 1 = MSB). |
 | `desrt crack` ra 0 hit dù bảng đã build | `--chain-len` / `--table-id` / `--plaintext` lúc crack không khớp lúc build. |
-| **`desrt stats` báo `unique eps ≈ 0.003 of records`** (kiểu `26319 / 8100000`) | **Oversaturate**: chạy `--chains 8100000` trên keyspace `19⁸ ≈ 1.7e10`. `L·C / N ≈ 500` chứ không phải 3 → chain merge thảm khốc. Sửa: rebuild với `--chains 50000` (mặc định mới). |
+| **`desrt crack` chạy hàng giờ, không in dòng nào sau "launching GPU candidate kernel"** | **Crack cost O(T·t²/2)**: với `t = 2²⁰` và 32 target ≈ 1.76·10¹³ DES ops ≈ 30 giờ. `cudaDeviceSynchronize()` block luồng host nên không có stdout. Sửa: rebuild + crack với `--chain-len 4096` (mặc định mới). Crack 32 target → ~2 giây. |
+| **`desrt stats` báo `unique eps ≈ 0.003 of records`** (kiểu `26319 / 8100000`) | **Oversaturate**: chạy `--chains 8100000` trên keyspace `19⁸ ≈ 1.7e10`. `L·C / N ≈ 500` chứ không phải 3 → chain merge thảm khốc. Sửa: rebuild với defaults mới (`--chain-len 4096 --chains 12440000`). |
 | `desrt stats` báo `unique endpoints` thấp bất thường nhưng `chains` ở mức hợp lý | Reduction sai (không nhân `round` vào). Kiểm tra `reduce_idx` trong `common.h`. |
 | OOM trên L4 khi `desrt crack` | Giảm `--block-size`, hoặc chia `targets.txt` thành nhiều phần. |
 | `make-target: --key must be exactly 8 characters from [a-z0-9]` | Có chữ hoa hoặc ký hiệu — charset hiện tại không nhận. |

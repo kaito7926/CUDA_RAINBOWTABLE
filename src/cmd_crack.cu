@@ -150,7 +150,7 @@ int cmd_crack(int argc, char** argv) {
     }
     const std::string target_path = a.opt_str("--target", "");
     const std::string single_ct   = a.opt_str("--ct", "");
-    const uint32_t chain_len  = a.opt_u32("--chain-len", 1048576U);
+    const uint32_t chain_len  = a.opt_u32("--chain-len", 4096U);
     const uint32_t table_id   = a.opt_u32("--table-id", 0U);
     const uint32_t num_shards = a.opt_u32("--shards", 4096U);
     const int      device     = a.opt_int("--gpu", 0);
@@ -180,6 +180,19 @@ int cmd_crack(int argc, char** argv) {
                 T, chain_len, table_id, num_shards);
     std::printf("  plaintext=0x%016llX  gpu=%d\n",
                 (unsigned long long)plaintext, device);
+    // Heads-up so the user can see whether we are stuck.
+    const double est_work_des = static_cast<double>(T) *
+                                static_cast<double>(chain_len) *
+                                static_cast<double>(chain_len) * 0.5;
+    std::printf("  est. GPU work ~ %.3e DES ops (T·t²/2). At 150 MH/s ≈ %.1f s.\n",
+                est_work_des, est_work_des / 1.5e8);
+    if (chain_len >= (1u << 18)) {
+        std::printf("  WARNING: chain-len=%u is large. Crack cost scales as t² —\n"
+                    "           expect minutes to hours. Consider rebuilding with\n"
+                    "           --chain-len 4096 (~2 s for T=32 on one L4).\n",
+                    chain_len);
+    }
+    std::fflush(stdout);
 
     // ---- 1. GPU computes candidates ----
     CUDA_OK(cudaSetDevice(device));
@@ -198,6 +211,12 @@ int cmd_crack(int argc, char** argv) {
     const uint64_t total_threads = (uint64_t)T * chain_len;
     const uint64_t grid = (total_threads + block_size - 1) / block_size;
 
+    std::printf("  launching GPU candidate kernel: grid=%llu block=%d "
+                "threads=%llu\n",
+                (unsigned long long)grid, block_size,
+                (unsigned long long)total_threads);
+    std::fflush(stdout);
+
     auto t_gpu0 = std::chrono::steady_clock::now();
     crack_compute_kernel<<<grid, block_size>>>(
         d_candidates, d_targets, T, chain_len, table_id, plaintext, N);
@@ -206,6 +225,7 @@ int cmd_crack(int argc, char** argv) {
     double gpu_secs = std::chrono::duration<double>(t_gpu1 - t_gpu0).count();
     std::printf("  GPU candidate phase: %.2f s  (%.3e endpoint computations)\n",
                 gpu_secs, static_cast<double>(total_threads));
+    std::fflush(stdout);
 
     std::vector<uint64_t> h_candidates((size_t)T * chain_len);
     CUDA_OK(cudaMemcpy(h_candidates.data(), d_candidates, cand_bytes,

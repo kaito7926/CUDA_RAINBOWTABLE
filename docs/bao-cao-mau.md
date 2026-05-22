@@ -27,12 +27,15 @@ Báo cáo trình bày thiết kế, cài đặt và thực nghiệm một công 
 **DES PC-1 loại 8 bit parity**, các cặp ký tự chỉ khác bit thấp nhất
 (`b/c`, `d/e`, …, `0/1`, …, `8/9`) là DES-tương đương. Không gian khóa
 **hiệu dụng** sụp đổ về `19⁸ ≈ 1.70 × 10¹⁰`, nhỏ hơn `36⁸` đến **166 lần**.
-Với cấu hình `chain_len = 2²⁰`, `chains = 50,000`, công cụ đạt phủ lý
-thuyết ~95% trên một bảng, kích thước đĩa ~800 KiB, thời gian build
-<<X>> phút trên một GPU NVIDIA L4, và thời gian tra một ciphertext trung
-bình <<Y>> giây. Bài học rút ra: DES với khóa ASCII bị suy yếu kép — vừa do
-không gian khóa nhỏ, vừa do cấu trúc parity-bit khiến nhiều ASCII string đụng
-độ; điều này khẳng định DES **không đủ an toàn** cho hệ mật hiện đại.
+Với cấu hình `chain_len = 4096`, `chains = 12,440,000`, công cụ đạt phủ lý
+thuyết ~95% trên một bảng, kích thước đĩa ~200 MiB, thời gian build
+<<X>> phút trên một GPU NVIDIA L4, và thời gian tra 32 ciphertext trung
+bình **~2 giây** tổng cộng. Báo cáo cũng phân tích **tradeoff Hellman** giữa
+`t` (độ dài chain) và `m` (số chain): build O(`m·t`), crack O(`T·t²/2`),
+storage O(`m`) — giữ phủ cố định, ta có thể đánh đổi storage lấy crack
+speed. Bài học cuối: DES với khóa ASCII bị suy yếu kép — vừa do không gian
+khóa nhỏ, vừa do cấu trúc parity-bit khiến nhiều ASCII string đụng độ;
+điều này khẳng định DES **không đủ an toàn** cho hệ mật hiện đại.
 
 ---
 
@@ -218,12 +221,14 @@ uint64_t reduce(uint64_t ct, uint32_t round, uint32_t table_id, uint64_t N) {
 | Charset (canonical) | — | `abdfhjlnprtvxz02468` | 19 ký tự DES-injective |
 | Độ dài khóa | `k` | 8 | |
 | Kích thước keyspace hiệu dụng | `N` | `19⁸ = 16,983,563,041` | ≈ 2³³·⁹⁸ |
-| Độ dài chain | `t` | `2²⁰ = 1,048,576` | |
-| Số chain mỗi bảng | `m` | `50,000` | đạt phủ ~95% |
+| Độ dài chain | `t` | `4096 = 2¹²` | chọn nhỏ để crack `T·t²` nhanh |
+| Số chain mỗi bảng | `m` | `12,440,000` | giữ `m·t/N ≈ 3` (phủ 95%) |
 | Số shard | — | `4096` | `shard = endpoint mod 4096` |
 | Kích thước record | — | 16 B | `(endpoint, startpoint)` |
-| Phủ lý thuyết một bảng | `P_table` | `≈ 0.9544` | `1 - e^{-m·t/N}` |
-| Kích thước bảng | — | `~800 KiB` | `m × 16 B` |
+| Phủ lý thuyết một bảng | `P_table` | `≈ 0.9502` | `1 - e^{-m·t/N}` |
+| Kích thước bảng | — | `~200 MiB` | `m × 16 B` |
+| Chi phí build | — | `m·t ≈ 5.1·10¹⁰` DES | ~5 phút trên L4 |
+| Chi phí crack 32 target | — | `T·t²/2 ≈ 2.7·10⁸` DES | ~2 giây trên L4 |
 
 ### 3.3 Tạo điểm bắt đầu
 
@@ -375,8 +380,52 @@ tốc độ `m²/(2·19⁸)` rất cao khi `m = 8.1M`.
 `abdfhjlnprtvxz02468`, mỗi ký tự đại diện một lớp parity. `idx_to_key`
 chỉ phát ra canonical char → ánh xạ injective vào không gian DES key.
 `string_to_idx` vẫn chấp nhận 36 ký tự `[a-z0-9]` (canonical hóa khi đọc).
-`N_KEYSPACE` đổi thành `19⁸`; default `--chains` xuống `50,000`. Sau khi
-sửa, build tương ứng đạt phủ ~95% như công thức dự đoán.
+`N_KEYSPACE` đổi thành `19⁸`. Sau khi sửa, build tương ứng đạt phủ ~95%
+như công thức dự đoán.
+
+#### 4.3.3 Crack treo hàng giờ — tradeoff Hellman bị bỏ qua
+
+Phiên bản đầu chọn `chain_len = 2²⁰` (theo gợi ý của spec gốc cho keyspace
+36⁸). Sau khi sửa charset xuống 19⁸ và `chains = 50,000`, build chạy 5
+phút bình thường. Nhưng khi chạy `desrt crack --target targets.txt`
+(32 target), tiến trình **không in dòng nào trong nhiều giờ**.
+
+Phân tích: chi phí crack rainbow table cho `T` target với chain length
+`t` là
+
+```
+W_crack = T · t · (t/2)  =  T · t² / 2     DES ops
+```
+
+(vì với mỗi target ta thử mọi vị trí `p ∈ [0, t)`, mỗi vị trí phải walk
+tiếp `t - p - 1` bước → trung bình `t/2`). Tính với `T=32`, `t=2²⁰`:
+
+```
+W = 32 · (2²⁰)² / 2 = 32 · 2³⁹ ≈ 1.76 · 10¹³  DES ops
+```
+
+ở throughput L4 ~150 MH/s end-to-end → **~30 giờ**. Vì
+`cudaDeviceSynchronize()` block toàn bộ luồng host nên không có
+stdout/stderr — trông như bị treo. Build O(`m·t` = 5·10¹⁰) thì rất nhanh
+(5 phút), nhưng crack O(`T·t²`) thì khổng lồ vì `t` lớn.
+
+**Cách sửa**: giảm `t` 256× xuống `4096 = 2¹²` và tăng `m` 256× lên
+`12,440,000` để giữ `m·t/N ≈ 3` (phủ 95% không đổi). Kết quả:
+
+| Quantity | Trước | Sau |
+|---|---|---|
+| `t` | 1,048,576 | 4,096 |
+| `m` | 50,000 | 12,440,000 |
+| Build cost `m·t` | 5.24·10¹⁰ | 5.10·10¹⁰ |
+| Crack cost (32 target) `T·t²/2` | 1.76·10¹³ | 2.68·10⁸ |
+| Build time | ~5 phút | ~5 phút |
+| Crack time | **~30 giờ** | **~2 giây** |
+| Table size | 0.8 MiB | 200 MiB |
+
+Bài học: với bảng cầu vồng, **build cost và crack cost không scale giống
+nhau** — build O(`m·t`), crack O(`T·t²`). Khi muốn online lookup nhanh,
+phải chọn `t` nhỏ và bù bằng `m` lớn. Tradeoff này thuộc về kỹ thuật
+"time-memory" cổ điển của Hellman (1980).
 
 ---
 
@@ -423,18 +472,18 @@ So sánh: throughput GPU/CPU ≈ <<tỉ số>>×.
 Lệnh:
 
 ```bash
-desrt build --out ./tab --chains 50000 --chain-len 1048576 \
+desrt build --out ./tab --chains 12440000 --chain-len 4096 \
             --shards 4096 --table-id 0 --gpu 0
 ```
 
 | Hạng mục | Giá trị |
 |---|---|
-| Tổng số chain | 50,000 |
-| Tổng số bước DES | `50,000 × 2²⁰ ≈ 5.24·10¹⁰` |
+| Tổng số chain | 12,440,000 |
+| Tổng số bước DES | `12.44·10⁶ × 4096 ≈ 5.10·10¹⁰` |
 | Thời gian build thực | <<M phút>> |
 | Throughput hiệu dụng | <<XXX MH/s>> |
-| Dung lượng `tab/raw/` | <<~800 KiB>> |
-| Dung lượng `tab/sorted/` sau sort | <<~800 KiB>> |
+| Dung lượng `tab/raw/` | <<~200 MiB>> |
+| Dung lượng `tab/sorted/` sau sort | <<~200 MiB>> |
 
 [chèn ảnh: screenshot tiến trình build + `du -h tab/`]
 
@@ -444,12 +493,12 @@ Lệnh `desrt stats --table ./tab`:
 
 | Chỉ số | Giá trị thực đo | Ghi chú |
 |---|---|---|
-| Tổng record | <<50,000>> | = `chains` nếu không có lỗi |
-| Endpoint duy nhất | <<≈19,646>> | nghiệm ODE merge `1/(t/(2N)+1/m₀)` |
-| Mean records/shard | <<12.2>> | = `m / num_shards` |
-| Min records/shard | <<>> | mong đợi 0 (có shard rỗng) |
-| Max records/shard | <<>> | có thể vài chục (heavy-tail duplicate) |
-| Shard rỗng | <<>> | `4096 · exp(-19646/4096) ≈ 34` |
+| Tổng record | <<12,440,000>> | = `chains` nếu không có lỗi |
+| Endpoint duy nhất | <<≈4.89·10⁶>> | nghiệm ODE merge `1/(t/(2N)+1/m₀)` |
+| Mean records/shard | <<3037>> | = `m / num_shards` |
+| Stdev records/shard | <<≈55>> | Poisson(3037) → √3037 |
+| Min / Max records/shard | <<>> | trong khoảng `mean ± 4·stdev` |
+| Shard rỗng | <<0>> | `exp(-3037) ≈ 0` |
 
 > **`unique_endpoints/records` ≠ coverage**. Đó là tỉ lệ chain sống sót sau
 > merge. Với `m·t/N = 3` (chỉnh để phủ 95%), tỉ lệ này ≈ 0.4. Coverage thực
@@ -483,11 +532,11 @@ So với lý thuyết `P_table ≈ 0.9508`: <<sát / lệch ±X%>>.
 
 | Hạng mục | Giá trị |
 |---|---|
-| Sinh ứng viên trên GPU | <<X.X s>> |
-| Đọc + lower_bound các shard | <<X.X s>> |
-| Replay-verify trên CPU | <<X.X s>> |
-| Tổng wall-time cho 8 target | <<X.X s>> |
-| Trung bình / target | <<X.X s>> |
+| Sinh ứng viên trên GPU | <<~2 s>> |
+| Đọc + lower_bound các shard | <<<1 s>> |
+| Replay-verify trên CPU | <<<1 s>> |
+| Tổng wall-time cho 32 target | <<~3 s>> |
+| Trung bình / target | <<<0.1 s>> |
 | False positive (replay loại) | <<N>> |
 
 ---
@@ -511,22 +560,35 @@ Thực đo: <<XX%>>. Sai khác do:
 
 ### 6.1.1 So sánh trước/sau khi sửa bug PC-1
 
-| Cấu hình | `chains` (m) | `m·t/N_eff` | `unique eps` thực | nghiệm ODE | sai số |
-|---|---|---|---|---|---|
-| Trước (charset 36 sử dụng N=36⁸) | 8,100,000 | 500 | 26,319 | 33,866 | 22% |
-| Sau (charset 19 canonical, N=19⁸) | 50,000 | 3.087 | <<19,634>> | 19,646 | <<0.06%>> |
+| Cấu hình | `chains` (m) | `chain_len` (t) | `m·t/N_eff` | `unique eps` thực | nghiệm ODE | sai số |
+|---|---|---|---|---|---|---|
+| (a) charset 36, N=36⁸ (sai) | 8,100,000 | 2²⁰ | 500 | 26,319 | 33,866 | 22% |
+| (b) charset 19, t=2²⁰ | 50,000 | 2²⁰ | 3.087 | 19,634 | 19,646 | 0.06% |
+| (c) charset 19, t=4096 (đang dùng) | 12,440,000 | 4,096 | 3.000 | <<≈4.89·10⁶>> | 4.89·10⁶ | <<>> |
 
 Quan sát quan trọng:
 
-- Build cũ "lãng phí" 162× compute (8.1M / 50K) mà vẫn chỉ có 26K endpoint
-  duy nhất — chain merge thảm khốc do `m·t/N_eff = 500 ≫ 3`.
-- Build mới khớp nghiệm ODE đến 0.06%, chứng tỏ reduction function uniform
-  mod `N_eff` và chain dynamics đúng như lý thuyết rainbow.
+- (a) "lãng phí" 162× compute mà vẫn chỉ có 26K endpoint duy nhất — chain
+  merge thảm khốc do `m·t/N_eff = 500 ≫ 3`.
+- (b) khớp nghiệm ODE đến 0.06%, chứng tỏ reduction function uniform mod
+  `N_eff` và chain dynamics đúng như lý thuyết rainbow. Nhưng build này
+  có `t = 2²⁰` quá lớn → crack mất ~30 giờ (xem §4.3.3).
+- (c) giảm `t` xuống 4096, tăng `m` lên 12.44M. `m·t/N` không đổi → phủ
+  không đổi. Nhưng `T·t²/2` (chi phí crack) giảm 65,536× xuống ~2 giây.
 
-Hai cột "trước" và "sau" có ý nghĩa khác nhau: cột trước minh họa **sự
-sụp đổ PC-1** (chains còn 0.32% là dấu hiệu bệnh), cột sau minh họa
-**rainbow table chạy đúng** (chain merge theo lý thuyết, coverage ~95%
-đo bằng crack §5.6, không phải đọc qua `unique_eps/records`).
+### 6.1.2 So sánh cost của các config
+
+| Cost | (a) hỏng | (b) crack chậm | (c) đang dùng |
+|---|---|---|---|
+| Build cost `m·t` | 8.49·10¹² | 5.24·10¹⁰ | 5.10·10¹⁰ |
+| Build time | ~30 phút | ~5 phút | ~5 phút |
+| Crack cost (32 T) `T·t²/2` | 1.76·10¹³ | 1.76·10¹³ | 2.68·10⁸ |
+| Crack time | ~30 giờ | ~30 giờ | ~2 giây |
+| Storage `m·16B` | 130 MiB | 0.8 MiB | 200 MiB |
+| Coverage | ~0.3% (sai) | ~95% | ~95% |
+
+Cấu hình (c) cho compromise tốt nhất: build nhanh, crack tức thì, storage
+chấp nhận được, phủ đầy đủ.
 
 ### 6.2 Đánh giá reduction function
 
@@ -653,7 +715,7 @@ https://github.com/kaito7926/CUDA_RAINBOWTABLE.
 desrt bench
 
 # Build bảng đầy đủ
-desrt build --out ./tab --chains 50000 --chain-len 1048576 --shards 4096 --gpu 0
+desrt build --out ./tab --chains 12440000 --chain-len 4096 --shards 4096 --gpu 0
 
 # Sort + stats
 desrt sort  --in ./tab --shards 4096

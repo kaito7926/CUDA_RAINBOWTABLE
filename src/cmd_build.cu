@@ -65,8 +65,11 @@ void print_help() {
         "            [--shard-buffer-kb N] [--gpu DEVICE] [--plaintext 0xHEX]\n"
         "            [--block-size N]\n"
         "\n"
-        "Defaults: chain-len=1048576, chains=50000 (~95%% of N=19^8),\n"
-        "          shards=4096, batch-size=65536, shard-buffer-kb=64.\n");
+        "Defaults: chain-len=4096, chains=12440000 (~95%% of N=19^8),\n"
+        "          shards=4096, batch-size=65536, shard-buffer-kb=64.\n"
+        "\n"
+        "Crack cost scales as T·t²/2; we trade large m for small t so the\n"
+        "online lookup runs in seconds. See docs/design.md §6 for the math.\n");
 }
 
 } // namespace
@@ -82,9 +85,9 @@ int cmd_build(int argc, char** argv) {
         return 1;
     }
 
-    const uint64_t chains       = a.opt_u64("--chains", 50000ULL);
+    const uint64_t chains       = a.opt_u64("--chains", 12440000ULL);
     const uint64_t start_chain  = a.opt_u64("--start-chain-id", 0ULL);
-    const uint32_t chain_len    = a.opt_u32("--chain-len", 1048576U);
+    const uint32_t chain_len    = a.opt_u32("--chain-len", 4096U);
     const uint32_t table_id     = a.opt_u32("--table-id", 0U);
     const uint32_t num_shards   = a.opt_u32("--shards", 4096U);
     const uint64_t batch_size   = a.opt_u64("--batch-size", 65536ULL);
