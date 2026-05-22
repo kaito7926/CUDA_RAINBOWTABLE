@@ -24,6 +24,13 @@ table reaches ~95% model coverage at about **12.44 M chains** (raw size
 > ops, ~5 minutes on an L4) but cuts crack cost by 256² × from ~30 hours to
 > **~2 seconds for 32 targets**. The price is a larger table (0.8 MiB →
 > 200 MiB), trivially affordable on the 77 GiB disk.
+>
+> **Hit rate per single table is ~60% real** (vs 95% upper bound) — chain
+> merges and chain-correlation degrade coverage. To get higher, build
+> *k* independent tables with different `--table-id` values; combined
+> hit rate is `1 − (1 − p)^k`, so **3 tables reach ~94%** at 3× the build
+> cost. `desrt crack` accepts `--table DIR1,DIR2,DIR3` and prunes solved
+> targets between passes.
 
 ## Layout
 

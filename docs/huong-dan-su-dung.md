@@ -502,6 +502,39 @@ Từ vị trí đó trở đi chúng trùng nhau hoàn toàn. Số chain "hiệu
 Reduction phụ thuộc `round` giúp **giảm xác suất collision tại cùng vị trí**,
 không loại trừ hoàn toàn.
 
+### "Vì sao hit rate chỉ 60%, làm sao tăng?"
+
+Một bảng cầu vồng đơn với `m·t/N ≈ 3` cho phủ lý thuyết trên 95%, nhưng phủ
+**thực** thường chỉ 60–75% do chain merge tương quan (mỗi chain "tham"
+một subset có cấu trúc của không gian khóa, không phải `t` mẫu uniform
+độc lập). Để tăng phủ, build **nhiều bảng độc lập** với `--table-id`
+khác nhau:
+
+```
+phủ kết hợp = 1 - (1 - p)^k
+```
+
+| Số bảng | Phủ kết hợp (p=0.6) |
+|---|---|
+| 1 | 60% |
+| 2 | 84% |
+| **3** | **94%** |
+| 4 | 97% |
+
+Mỗi bảng có reduction function độc lập (`table_id` được nhân vào hàm
+mix), nên việc gặp/miss trên các bảng là độc lập. Recipe:
+
+```bash
+# Build 3 bảng độc lập, mỗi bảng ~5 phút
+./build/desrt build --out /data/tab0 --table-id 0 --chains 12440000 --chain-len 4096
+./build/desrt build --out /data/tab1 --table-id 1 --chains 12440000 --chain-len 4096
+./build/desrt build --out /data/tab2 --table-id 2 --chains 12440000 --chain-len 4096
+./build/desrt sort --in /data/tab0 && ./build/desrt sort --in /data/tab1 && ./build/desrt sort --in /data/tab2
+
+# Crack với cả 3, đã solved sẽ bỏ qua ở bảng sau
+./build/desrt crack --table /data/tab0,/data/tab1,/data/tab2 --target targets.txt
+```
+
 ### "Vì sao bảng lưu `(endpoint, start)` thay vì cả chain?"
 
 Lưu cả chain = `chain_len × 8 B` mỗi chain = lãng phí. Mỗi chain có thể

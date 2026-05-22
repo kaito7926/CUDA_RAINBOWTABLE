@@ -661,13 +661,19 @@ bố mong đợi gần đều theo `p`.
 
 ### 7.3 Hướng phát triển
 
-1. **Bitsliced DES kernel**: kỳ vọng 3–8 GH/s/L4, nâng phủ lên `36⁹` hoặc
+1. **Multi-table** (đã hỗ trợ): build `k` bảng độc lập với `--table-id`
+   khác nhau, kết hợp coverage `1 - (1-p)^k`. Với `p=0.6` đo được, `k=3`
+   cho phủ thực ~94%. Đây là cách trực tiếp và hiệu quả nhất để tăng
+   hit rate.
+2. **Bitsliced DES kernel**: kỳ vọng 3–8 GH/s/L4, nâng phủ lên `36⁹` hoặc
    chuyển sang `[A-Za-z0-9]⁸ = 62⁸`.
-2. **Đa bảng**: chạy `--table-id 0..k-1` để đẩy phủ lên `1 - 0.05⁴ > 99.99%`.
 3. **Distinguished points**: thay vì lưu tại đúng `t` bước, dừng khi
    endpoint có một mẫu bit nhất định — giảm I/O khi tra.
 4. **Multi-GPU một process**: hiện đang phải chạy 2 tiến trình. Thêm
    per-shard mutex hoặc per-GPU subdir là cải tiến đơn giản.
+5. **GPU-side replay-verify**: hiện CPU làm replay (≤3.4 MH/s/thread),
+   chuyển sang GPU sẽ thêm ~50× băng thông DES — giảm lookup phase từ
+   chục giây xuống dưới 1 giây.
 
 ---
 

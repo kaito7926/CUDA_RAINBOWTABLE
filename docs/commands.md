@@ -121,16 +121,44 @@ Recovers keys for one or more ciphertexts.
 
 ```
 desrt crack
-    --table DIR           required, points at a sorted-shards directory
-    --target FILE         or use --ct
-    --ct HEX              single-target shortcut
-    [--chain-len N]       default 4096       (must match the build)
-    [--jobs N]            default = hardware_concurrency() (host worker threads)
-    [--table-id N]        default 0          (must match the build)
-    [--shards N]          default 4096       (must match the build)
-    [--gpu DEVICE]        default 0
-    [--plaintext 0xHEX]   default 0x1122334455667788
-    [--block-size N]      default 128
+    --table DIR[,DIR2,...]    required; comma-separated list of table dirs
+    --target FILE             or use --ct
+    --ct HEX                  single-target shortcut
+    [--chain-len N]           default 4096       (must match the build)
+    [--jobs N]                default = hardware_concurrency() (host workers)
+    [--table-id N[,N2,...]]   default 0,1,2,...  (must match each build's --table-id)
+    [--shards N]              default 4096       (must match the build)
+    [--gpu DEVICE]            default 0
+    [--plaintext 0xHEX]       default 0x1122334455667788
+    [--block-size N]          default 128
+```
+
+### Multi-table cracking — boosting hit rate
+
+A single rainbow table at `m·t/N ≈ 3` empirically reaches ~60% real hit
+rate (chain merges + chain-correlation degrade the upper-bound coverage
+of 95%). To go higher, build **k independent tables** with distinct
+`--table-id` values: combined hit rate is `1 - (1 - p)^k`.
+
+| Tables | Combined hit rate (p ≈ 0.6) |
+|---|---|
+| 1 | 60% |
+| 2 | 84% |
+| 3 | 94% |
+| 4 | 97% |
+
+Build and crack:
+
+```bash
+# Build 3 tables (~5 min each on an L4)
+desrt build --out /data/tab0 --table-id 0 --chains 12440000 --chain-len 4096
+desrt build --out /data/tab1 --table-id 1 --chains 12440000 --chain-len 4096
+desrt build --out /data/tab2 --table-id 2 --chains 12440000 --chain-len 4096
+desrt sort  --in  /data/tab0 && desrt sort --in /data/tab1 && desrt sort --in /data/tab2
+
+# Crack against all three. Solved targets are pruned between passes so
+# table 2 and 3 only do the work for the still-missing targets.
+desrt crack --table /data/tab0,/data/tab1,/data/tab2 --target targets.txt
 ```
 
 The host-side phase (shard walk + replay-verify) is multi-threaded; at
