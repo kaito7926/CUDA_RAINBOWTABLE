@@ -620,6 +620,42 @@ Histogram `p` (vị trí trong chain mà target được tìm thấy) cho 8 targ
 Lý thuyết: hit ở `p` gần `t-1` nhanh hơn (ít bước reduce phải làm) — phân
 bố mong đợi gần đều theo `p`.
 
+### 6.5 Nhiều bảng độc lập — vì sao hơn một bảng lớn
+
+> Chi tiết đầy đủ ở `docs/vi-sao-nhieu-bang.md`. Tóm tắt cho báo cáo:
+
+**Một bảng — lợi tức giảm dần.** Chain merge khiến số chain phân biệt sau
+`t` bước giảm còn `m_t = m/(1 + λ/2)` với `λ = m·t/N`. Hệ quả: độ phủ một
+bảng `p = 1 − (1 + λ/2)⁻²`, tức **tỉ lệ sót chỉ giảm theo đa thức** bậc 2
+với công xây. Đo thực: `m = 12.44M`, `λ = 3` → `m_t = 4.98M` (khớp `desrt
+stats`), phủ thực ≈ 59%.
+
+**Nhiều bảng — xác suất sót nhân lên.** Mỗi bảng dùng `table_id` khác →
+reduction function độc lập → chain không bao giờ merge chéo bảng → biến cố
+sót độc lập. Với `k` bảng:
+
+```
+P_k = 1 − (1 − p)^k
+```
+
+Tỉ lệ sót giảm theo **hàm mũ** `(1−p)^k`. Với `p = 0.6`:
+
+| `k` | 1 | 2 | 3 | 4 | 5 |
+|---|---|---|---|---|---|
+| phủ `1−0.4ᵏ` | 0.60 | 0.84 | 0.94 | 0.97 | 0.99 |
+
+**So sánh cùng công sức `9N`:**
+
+| Chiến lược | Tỉ lệ sót | Phủ |
+|---|---|---|
+| 1 bảng lớn, `λ=9` | `(1+4.5)⁻² = 0.033` (lý thuyết), thực ~0.30 | ~70% |
+| 3 bảng nhỏ, `λ=3` mỗi bảng | `0.4³ = 0.064` | ~94% |
+
+→ Cùng công sức, **nhiều bảng độc lập phủ nhiều hơn** vì tránh lãng phí do
+merge. Thực nghiệm xác nhận: 1 bảng = 19/32 (59%), 3 bảng = 32/32 (100%).
+
+[chèn ảnh: screenshot output `desrt crack` 3 bảng → 32/32 solved]
+
 ---
 
 ## 7. Bàn luận về an toàn
